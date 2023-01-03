@@ -1,0 +1,747 @@
+#!/usr/bin/env python
+# -*- coding: utf8 -*-
+
+from __future__ import print_function
+
+usage = """First sentence is the short summary.
+
+This program blah blah blah
+for about a paragraph.
+
+Usage:  trm [options] [account]
+
+        h, --help               this text
+        -V, --version           print version and exit
+        --rcfile <file>         trm rcfile, overriding ~/.trmrc
+
+        account         identifies the mail server
+
+Exit codes:
+
+        0 - successful return
+        2 - user error
+        3 - system error, e.g. unable to connect to server
+
+        TRMRC           trm rcfile path, overriding ~/.trmrc
+"""
+
+import curses
+import errno
+import getopt
+import os
+import re
+import signal
+import stat
+import string
+import sys
+import time
+
+import screens
+import emailaccount
+import mbox
+import imap
+from keycodes import *
+from utils import writeLog, loggingEnabled, configGet, configSet
+
+PY3 = sys.version_info[0] >= 3
+if PY3:
+    import configparser
+    basestring = str
+    raw_input = input
+else:
+    import ConfigParser as configparser
+    import locale
+    locale.setlocale(locale.LC_ALL, '')
+
+# Programming note: under Python2, curses knows nothing about unicode.
+# You must manually encode any unicode string before passing to curses.
+# See https://stackoverflow.com/a/40082903/338479
+
+VERSION = "1.0"
+
+SPLASH_SCREEN = """
+                *** NEWS NEWS ***
+
+        Welcome to trm 1.0 (19 April 2023).
+
+        Type 'h' at any prompt to get help.
+
+        This message will not be displayed again unless it is updated with new
+        information.
+
+        Edward Falk falk@efalk.org
+        [Type any key to continue]
+"""
+
+rcfile = None
+mailrc = None
+config = None
+accounts = []
+
+HOME = os.environ["HOME"] if "HOME" in os.environ else os.path.expanduser('~')
+
+COMMON_HELP = u"""
+
+Common commands:
+
+ h        this text
+ n        next
+ p        previous
+ ^E       scroll up 1 line
+ > ^F SP  next page
+ < ^B     previous page
+ ^        top
+ $        end
+ CR       select current item
+ ^C       exit trm
+ ESC      return to previous screen
+ ^L       refresh screen
+
+ a-zA-Z0-9      select indicated item
+
+ ↑, ↓, PGDN, PGUP, HOME, END also work for navigating.
+"""
+# ^Y       scroll down 1 line           TODO terminal converts ^Y to SIGSTP
+
+
+IMAP_HELP = u"""
+ A      show all mailboxes, including unsubscribed
+ S      edit subscriptions"""
+
+
+
+
+
+#       MAIN
+
+
+def main():
+    """main() handles the initial setup before entering curses mode. It
+    reads the config files, parses command line arguments, etc. It then
+    runs main_func() which enters curses mode operations. main_func()
+    is wrapped in a try/catch block that makes sure curses mode is exited
+    no matter what happens."""
+    global rcfile, mailrc, config, accounts
+
+    term = None
+
+    if "TRMRC" in os.environ:
+        rcfile = os.environ["TRMRC"]
+    else:
+        rcfile = os.path.join(HOME, ".trmrc")
+
+    if "MAILRC" in os.environ:
+        mailrc = os.path.expanduser(os.environ["MAILRC"])
+    else:
+        mailrc = os.path.join(HOME, ".mailrc")
+
+    # Get arguments with getopt
+    long_opts = ['help', 'term=', 'rcfile=', 'version']
+    try:
+        (optlist, args) = getopt.getopt(sys.argv[1:], 'hVb:cL', long_opts)
+        for flag, value in optlist:
+            if flag in ('-h', "--help"):
+                print(usage)
+                return 0
+            if flag in ('-V', "--version"):
+                print("trm version " + VERSION)
+                return 0
+            elif flag == '-L':
+                loggingEnabled = True
+            elif flag == "--rcfile":
+                rcfile = value
+            elif flag == '-c':
+                pass
+            elif flag == '--term':
+                term = value
+    except getopt.GetoptError as e:
+        print(e)
+        sys.exit(2)
+
+    SecurityCheck(rcfile)
+    config = ReadConfig(rcfile, mailrc)
+
+    accounts = getAccounts(config)
+
+    if term:
+        sys.stdin = open(term,"r")
+        sys.stdout = open(term,"w")
+
+    try:
+        main_func(curses.initscr())
+
+    except Exception as e:
+        curses.endwin()
+        print()
+        print("trm died with:", e)
+        raise
+    except KeyboardInterrupt as e:
+        curses.endwin()
+        print()
+        sys.exit(1)
+    else:
+        curses.endwin()
+        WriteConfig(config, rcfile)
+        return 0
+
+def main_func(stdscr):
+    """This is the section that enters curses mode and calls the
+    splash screen (if needed) and then goes to account selection mode."""
+    curses.noecho()
+    curses.cbreak()
+    stdscr.keypad(True)
+
+    # Main loop. The return from each mode determines what thee
+    # next will be.
+    if configGet(config, "global","splashscreen") != VERSION:
+        SplashScreen(stdscr)
+
+    AccountScreen(stdscr, accounts)
+
+
+#       SPLASH SCREEN
+
+def SplashScreen(win):
+    global config
+    if not os.path.isfile(rcfile):
+        message = "Creating the file " + rcfile + "\n\n" + SPLASH_SCREEN
+    else:
+        message = SPLASH_SCREEN
+    screen = screens.ShortMessage(win, message)
+    screen.displayAndWait()
+    config.set("global","splashscreen", VERSION)
+
+def HelpScreen(win, text):
+    screens.PagerScreen(win, text, 'Help', "'q' to exit help: ", None).displayAndWait()
+
+
+#       ACCOUNT SELECTION
+
+ACCOUNT_SCREEN_HELP = u"""
+Select the email account to read. "local" refers to email stored
+locally on this machine, if any. Use '+' key to add a new
+account.""" + COMMON_HELP + """
+More commands:
+
+ +      add account
+ -      delete currently-selected account
+ q      exit trm"""
+
+def AccountScreen(win, accounts):
+    """Prompt user to select an account. When the user selects
+    one, go to MailboxScreen().  If user selects 'q', this function
+    returns."""
+    opts = [acct.getName() for acct in accounts]
+    optScreen = AccountScreenSetup(win, accounts, opts)
+    optScreen.display()
+    writeLog("About to enter main loop")
+    while True:
+        ic = win.getch()
+        writeLog("Received character %d" % ic)
+        if ic == ord('q'):
+            return ic
+        if ic == ord('h'):
+            HelpScreen(win, ACCOUNT_SCREEN_HELP)
+            optScreen.display()
+            continue
+        if optScreen.commonKeys(ic):
+            #pct = percent(optScreen.getCurrent(), len(opts))
+            #optScreen.setBottomPrompt("Select account %d%%, h for help: " % pct)
+            optScreen.setBottomPrompt("Select account. %d/%d, h for help: " % \
+                (optScreen.getCurrent()+1, len(opts)))
+            optScreen.refresh()
+            continue
+        idx = optScreen.isOptionKey(ic)
+        if idx >= 0:
+            writeLog("Chose option %d" % idx)
+            optScreen = None
+            DoMboxScreen(win, accounts[idx])
+            optScreen = AccountScreenSetup(win, accounts, opts)
+            optScreen.display()
+            continue
+        writeLog("Ignoring key code %d" % ic)
+
+def AccountScreenSetup(win, accounts, opts):
+    long_cmds = ["+ add email account", "- delete selected email account",
+        "E edit selected email account"]
+
+    optScreen = screens.OptionScreen(win, opts, "Select email account",
+        "choose: ",
+        "help",
+        "ENP+-",
+        long_cmds)
+    optScreen.resize()
+    #pct = percent(optScreen.getCurrent(), len(opts))
+    #optScreen.setBottomPrompt("Select account %d%%, h for help: " % pct)
+    optScreen.setBottomPrompt("Select account. %d/%d, h for help: " % \
+        (optScreen.getCurrent()+1, len(opts)))
+    return optScreen
+
+
+
+#       MAILBOX SELECTION
+
+def DoMboxScreen(win, account):
+    """Display and operate the mailbox selection screen. Most
+    of the work is done in an MailboxScreen object."""
+    # Connect
+    if account.acctType == "local":
+        writeLog("Open local account")
+        mailboxScreen = MboxScreen(win, account)
+
+    elif account.acctType == "imap":
+        writeLog("Open imap account")
+        mailboxScreen = ImapMboxScreen(win, account)
+
+    else:
+        writeLog("Unknown account type: " + account.acctType)
+        return
+
+    if not mailboxScreen.connect():
+        writeLog("connect failed")
+        return
+    ic = mailboxScreen.display()
+
+class MailboxScreen(object):
+    """Manages the mailbox selection dialog. Meant to be subclassed
+    for the various types of mailboxes. Currently only supports
+    Berkeley mbox and imap."""
+    HELP_TOP = u"""Select the mailbox to read."""
+    HELP_BOTTOM = """
+More commands:
+
+ +      add mailbox
+ -      delete currently-selected mailbox
+ q      exit, return to account selection
+ x      exit without saving changes
+
+ /regex/        search for items matching regex"""
+
+    def __init__(self, win, account):
+        """Depending on account type, connect to server and then display
+        list of mailboxes. If user selects 'q', this function reutrns."""
+        self.win = win
+        self.account = account
+
+    def connect(self):
+        """Connect to account and retrieve list of mailboxes."""
+        self.account.connect()
+        self.mboxes = self.account.getMboxes()
+        return True
+
+    def screenSetup(self):
+        """Create appropriate OptionsScreen object."""
+        long_cmds = ["+ add mailbox", "- delete selected mailbox"]
+
+        self.optScreen = optScreen = screens.OptionScreen(self.win, self.mboxes, "Select mailbox",
+            "choose: ",
+            "help",
+            "NP+-",
+            long_cmds)
+        optScreen.resize()
+        optScreen.setBottomPrompt("Select mailbox. %d/%d, h for help: " % \
+            (optScreen.getCurrent()+1, len(self.mboxes)))
+
+    def display(self):
+        # Display mailboxes and ask user to choose.
+        self.screenSetup()
+        optScreen = self.optScreen
+        win = self.win
+        mboxes = self.mboxes
+        optScreen.display()
+        writeLog("About to enter mailbox loop")
+        while True:
+            ic = win.getch()
+            writeLog("Received character %d" % ic)
+            if self.handleKey(ic):
+                # handleKey() may have changed something, so re-read these
+                optScreen = self.optScreen
+                win = self.win
+                mboxes = self.mboxes
+                continue
+            if ic in (ord('q'), ord('x'), ESC):
+                self.account.disconnect()
+                return ic
+            if ic == ord('h'):
+                self.showHelp()
+                continue
+            if optScreen.commonKeys(ic):
+                optScreen.setBottomPrompt("Select mailbox. %d/%d, h for help: " % \
+                    (optScreen.getCurrent()+1, len(mboxes)))
+                optScreen.refresh()
+                continue
+            idx = optScreen.isOptionKey(ic)
+            if idx >= 0:
+                # Launch next window
+                MessageScreen(win, self.account, mboxes[idx])
+                self.screenSetup()
+                optScreen = self.optScreen
+                optScreen.display()
+                continue
+            writeLog("Ignoring key code %d" % ic)
+
+    def handleKey(self, ic):
+        """handle keys not handled by display(). Return True if handled here"""
+        return False
+
+    def showHelp(self):
+        hlp = self.HELP_TOP + COMMON_HELP + self.HELP_BOTTOM
+        HelpScreen(self.win, hlp)
+        self.optScreen.display()
+
+    def emailScreen(self, win, mbox):
+        return
+
+
+class MboxScreen(MailboxScreen):
+    """Support for Berkeley mbox email."""
+    pass
+
+class ImapMboxScreen(MailboxScreen):
+    """Support for imap."""
+    HELP_BOTTOM = u"""
+More commands:
+
+ A      show all mailboxes, including unsubscribed
+ S      manage subscribed mailboxes
+ +      add mailbox
+ -      delete currently-selected mailbox
+ q      exit, return to account selection
+ x      exit without saving changes
+
+ /regex/        search for items matching regex"""
+
+    def connect(self):
+        """Connect to account and retrieve list of mailboxes."""
+        if not self.__imapLogin():
+            return False
+        self.mboxes = self.account.getMboxes()
+        return True
+
+    def screenSetup(self):
+        """Create appropriate OptionsScreen object."""
+        long_cmds = ["A toggle view all mailboxes", "S manage subscribed mailboxes",
+            "+ add mailbox", "- delete selected mailbox"]
+
+        writeLog("Create new options screen, %d items" % len(self.mboxes))
+        self.optScreen = optScreen = screens.OptionScreen(self.win, self.mboxes,
+            "Select mailbox",
+            "choose: ",
+            "help",
+            "ASNP+-",
+            long_cmds)
+        optScreen.resize()
+        self.__bottomPrompt()
+
+    def handleKey(self, ic):
+        """handle keys not recognized by display(). Return True if handled here"""
+        # TODO: S key
+        if ic == ord('A'):
+            self.account.subbedOnly = not self.account.subbedOnly
+            self.mboxes = self.account.getMboxes()
+            self.optScreen.setOptions(self.mboxes).displayOpts()
+            self.__bottomPrompt()
+            self.optScreen.refresh()
+            return True
+        return False
+
+    def showHelp(self):
+        hlp = self.HELP_TOP + COMMON_HELP + self.HELP_BOTTOM
+        HelpScreen(self.win, hlp)
+        self.optScreen.display()
+
+    def __imapLogin(self):
+        win = self.win
+        account = self.account
+        win.erase()
+        win.addstr(1,1, "Opening account \"%s\"" % account.getName())
+        win.refresh()
+        # Attempt to connect. Keep going until user enters a valid password
+        # or hits ^C
+        needPw = account.needsPasswd()
+        while True:
+            if needPw:
+                pwWin = screens.passwordWindow(win)
+                pwWin.display("Enter password, ^C to cancel:")
+                pw = pwWin.read()
+                win.move(2,1)
+                win.clrtoeol()
+                writeLog('Received string "%s"' % pw)
+                pwWin = None
+                win.refresh()
+                if pw == None:
+                    writeLog("pw was None, returning")
+                    return False
+                account.setPasswd(pw)
+            try:
+                win.addstr(2,1, "Logging in ...")
+                win.refresh()
+                account.connect()
+            except imap.imapAuthFailed as e:
+                win.addstr(2,1, "Authentication failed, try again")
+                win.refresh()
+                needPw = True
+                continue
+            except Exception as e:
+                writeLog("Login failed: %s" % e)
+                raise
+            else:
+                break
+        writeLog("login successful")
+        return True
+
+    def __bottomPrompt(self):
+        self.optScreen.setBottomPrompt("Select mailbox. %d/%d, h for help: " % \
+            (self.optScreen.getCurrent()+1, len(self.mboxes)))
+
+
+
+#       MESSAGE SELECTION
+
+MESSAGE_HELP_TOP = u"""Select the message to read."""
+MESSAGE_HELP_BOTTOM = u"""
+Flags:
+
+ N      new message
+ U      unread message
+ D      marked for deletion
+
+More commands:
+
+ N      next unread
+ ^N     next unread with same subject
+ P      previous unread
+ ^P     previous unread with same subject
+ d      delete current email (move to Trash)
+ D      delete entire thread
+ m      mark as read
+ M      mark entire thread as read
+ O      set selector order
+ R      reverse selector order
+ t      threaded view
+ u      unthreaded view
+ +      expand selected thread
+ -      unexpand selected thread
+ ^R     refresh view - re-read mailbox (can take a while)
+ q      exit, return to mailbox selection
+ x      exit without saving changes
+
+ /regex/[modifiers][:cmds]        search for messages matching regex
+
+    modifiers:
+        s       search Subject line (default)
+        f       search From line
+        t       search To line
+        b       search entire body (potentially very slow)
+
+    search commands: any of d,D,m,M.
+    With no commands, switches to a view of only matching articles.
+    Use "/<cr>" to clear the filter and view everything again."""
+
+msgScreenStatusShown = False
+
+def MessageScreen(win, account, mbox):
+    """Prompt user to select a message. When the user selects
+    one, go to DisplayScreen().  If user selects 'x' or 'q', this function
+    returns."""
+    global msgScreenStatusShown
+
+    msgScreenStatusShown = False
+
+    nmsg = mbox.getOverview(lambda mbox,count,final,pct,msg: \
+        MessageShowUpdate(win, mbox, count, final, pct, msg))
+    messages = mbox.summaries()
+
+    optScreen = MessageScreenSetup(win, account, mbox, messages)
+    optScreen.display()
+    writeLog("About to enter MessageScreen main loop")
+    while True:
+        ic = win.getch()
+        writeLog("Received character %d" % ic)
+        if ic == ord('q'):
+            writeLog("TODO: write out changes")
+            return ic
+        if ic in (ord('x'), ESC):
+            return ic
+        if ic == ord('h'):
+            HelpScreen(win, MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM)
+            optScreen = MessageScreenSetup(win, account, mbox, messages)
+            optScreen.display()
+            continue
+        # TODO: N,P,d,D,m,M,O,R,t,u
+        if optScreen.commonKeys(ic):
+            optScreen.setBottomPrompt("Select account. %d/%d, h for help: " % \
+                (optScreen.getCurrent()+1, len(messages)))
+            optScreen.refresh()
+            continue
+        idx = optScreen.isOptionKey(ic)
+        if idx >= 0:
+            writeLog("Chose option %d" % idx)
+            optScreen = None
+            optScreen = MessageScreenSetup(win, account, mbox, messages)
+            optScreen.display()
+            continue
+        writeLog("Ignoring key code %d" % ic)
+        # TODO: detect changes
+
+def MessageScreenSetup(win, account, mbox, messages):
+    optScreen = MessageOptionScreen(win, messages, "Select message",
+        "choose: ",
+        "help",
+        "NPdDmMORtu",
+        None)
+    optScreen.resize()
+    optScreen.setBottomPrompt("Select message. %d/%d, h for help: " % \
+        (optScreen.getCurrent()+1, len(messages)))
+    return optScreen
+
+def MessageShowUpdate(win, mbox, count, final, pct, msg):
+    # If this is called with final=False, then it's a good bet that
+    # we're going to be here for a while, so time to start showing status
+    global msgScreenStatusShown
+    if not final and not msgScreenStatusShown:
+        win.erase()
+        win.addstr(1,1, "Reading mailbox \"%s\", ^C to interrupt" % mbox.getName())
+        msgScreenStatusShown = True
+    win.addstr(2,1, "%d, %d%%" % (count, pct))
+    win.clrtoeol()
+    if msg:
+        win.addstr(3,1, msg)
+        win.clrtoeol()
+    win.refresh()
+
+class MessageOptionScreen(screens.ColumnOptionScreen):
+    def resizeColumns(self, wid):
+        def setCwids(wids):
+            self.cwidths = [(0,1)]
+            col = 2
+            for wid in wids:
+                self.cwidths.append((col, wid))
+                col += wid + 2
+        if wid > 100:
+            datewid = 16
+            sizewid = 6
+            wid -= 16+6
+            wid -= 12            # column gaps
+            subjwid = int(wid * 0.6)
+            fromwid = wid - subjwid
+            setCwids((subjwid, fromwid, datewid, sizewid))
+        elif wid > 80:
+            datewid = 16
+            wid -= 16
+            wid -= 10            # column gaps
+            subjwid = int(wid * 0.6)
+            fromwid = wid - subjwid
+            setCwids((subjwid, fromwid, datewid))
+        else:
+            wid -= 8            # column gaps
+            subjwid = int(wid * 0.6)
+            fromwid = wid - subjwid
+            setCwids((subjwid, fromwid))
+
+
+#       UTILITIES
+
+def SecurityCheck(rcfile):
+    try:
+        sb = os.stat(rcfile)
+    except OSError:
+        return
+
+    # Should be read-write to owner only.
+    mode = stat.S_IMODE(sb.st_mode)
+    if mode & 0177:
+        if mode & 066:
+            print("\n\n\nWarning: file \"%s\" was readable or writeable" % rcfile)
+            print("by others (mode %o)" % mode)
+            print("\nThis has been changed to mode 0600 (rw-------) for security.")
+            print("If you had any passwords stored in this file,")
+            print("you should consider changing them.")
+        try:
+            os.chmod(rcfile, 0600)
+        except Exception as e:
+            print('Failed to change mode of "%s" to %o, %s"' % (rcfile, 0600, e), file=sys.stderr)
+        if mode & 066:
+            raw_input("\nHit enter to continue: ")
+
+def ReadConfig(rcfile, mailrc):
+    config = configparser.ConfigParser()
+    if os.path.isfile(rcfile):
+        try:
+            config.read(rcfile)
+        except:
+            pass
+    if not config.has_section("global"):
+        config.add_section("global")
+        config.set("global","splashscreen", "0")
+
+    # Read the old .mailrc file while we're here
+    if os.path.isfile(mailrc):
+        try:
+            with open(mailrc, "r") as ifile:
+                if not config.has_section("mailrc"):
+                    config.add_section("mailrc")
+                # Looking for "folder" variable.
+                for line in ifile:
+                    line = line.strip()
+                    if line.startswith('#'): continue
+                    mo = set_re.match(line)
+                    if mo:
+                        if mo.group(1) == "folder":
+                            config.set("mailrc", "folder", mo.group(2).strip('"'))
+        except Exception as e:
+            print("Failed to read \"%s\", %s, ignored" % (mailrc, e), file=sys.stderr)
+
+    return config
+
+def WriteConfig(config, rcfile):
+    try:
+        config.remove_section("mailrc")
+        config.write(open(rcfile,"w"))
+    except Exception as e:
+        print("Failed to write \"%s\"," % rcfile, e, file=sys.stderr)
+
+def getAccounts(config):
+    accounts = []
+    getLocalAccount(accounts)
+    for section in config.sections():
+        if section.startswith("account "):
+            name = section[8:].strip('"')
+            config.set(section, "name", name)
+            accounts.append(imap.imapAccount(name, section, config))
+    return accounts
+
+set_re = re.compile(r""" *set +(\w+)=(.+)""")   # For parsing .mailrc
+def getLocalAccount(accounts):
+    """Check for the presence of email on the local machine."""
+    def getUserMail():
+        path = os.path.join("/var/mail", os.environ["USER"])
+        if os.path.isfile(path): return path
+        path = os.path.join("/var/spool/mail", os.environ["USER"])
+        if os.path.isfile(path): return path
+        return None
+    if "USER" in os.environ:
+        userMail = getUserMail()
+        writeLog("userMail = %s" % userMail)
+        if userMail:
+            # Where will user keep their local mail?
+            if config.has_option("mailrc", "folder"):
+                folder = config.get("mailrc", "folder")
+                if not folder.startswith('/'):
+                    folder = os.path.join(HOME, folder)
+                    config.set("mailrc", "folder", folder)
+                    writeLog("folder = %s" % folder)
+            elif os.path.isdir(os.path.join(HOME, "mail")):
+                configSet(config, "mailrc", "folder", os.path.join(HOME, "mail"))
+
+            account = mbox.MboxAccount("local", userMail, config)
+            accounts.append(account)
+
+def percent(a,b):
+    return 100*a//(b-1) if b > 1 else 100
+
+
+if __name__ == '__main__':
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    signal.signal(signal.SIGTSTP, signal.SIG_IGN)
+    sys.exit(main())
