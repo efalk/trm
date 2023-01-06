@@ -56,88 +56,83 @@ class ShortMessage(object):
 
 SCROLL_THRESH = 5
 
-class PagerScreen(object):
-    """Displays text and a prompt. If the user selects 'h',
-    displays help text. If the user enters a command, returns the keycode
-    of that command. Any method that doesn't have a specific
-    return value returns self, for chaining."""
-    def __init__(self, win, text, prompt1, prompt2, helpText):
-        writeLog("New PagerScreen, text:")
+class ContentScreen(object):
+    """Base class for screens that have scrolling content. The
+    screen has a top prompt, a content area, an optional status
+    line, and a bottom prompt. It handles some basic one-character
+    commands and window resizes. Subclasses must implement
+    displayContent() for this to be useful. Set status=None
+    to disable status line, else use e.g. "" for empty status"""
+    def __init__(self, win, prompt1, prompt2, content, status, helpText):
+        writeLog("New ContentScreen")
         self.win = win
-        self.text = text
+        self.content = content
+        self.contentLen = 100   # subclass must fix this up
         self.prompt1 = prompt1
         self.prompt2 = prompt2
+        self.long_options = None
+        self.status = status
         self.helpText = helpText
-        # String of commands. Commands "h \nnp<>^$q" are implied.
         self.offset = 0
         self.subwin = None
-        self.formatted = None
-        self.curspos = (0,0)
+        # Items below to be filled in by resize
+        self.hgt, self.wid = self.win.getmaxyx()
+        self.contentY = self.statusY = self.prompt2Y = 0
+        self.contentHgt = 0
+        self.subwin = None
 
     def resize(self):
-        hgt, wid = self.win.getmaxyx()
+        """Compute the sizes and positions of the content. Create the
+        subwindow. This should be called any time the terminal window
+        changes size, if the status line is enabled/disabled, and
+        before first calling display(),"""
+        self.hgt, self.wid = self.win.getmaxyx()
+        self.contentY = 2
+        self.prompt2Y = self.hgt - 1
+        if self.status is None:
+            self.contentHgt = self.hgt - 4
+        else:
+            self.statusY = self.hgt - 2
+            self.contentHgt = self.hgt - 5
 
-        # Allocate space for the 3 fields:
-        self.topRegion = (0,1)            # Region of top prompt
-        self.bottomRegion = (hgt-1, 1)    # Region at the bottom
-        bl = self.bottomRegion[0]
-        self.textRegion = (2, bl-3)
-
-        # Create subwindow for options
-        tl,tn = self.textRegion
-        self.subwin = self.win.subwin(tn,wid, tl,0)
+        # If long_options is specified, steal space to display them
+        # from the content window.
+        if self.long_options:
+            l = len(self.long_options)
+            self.long_optionsY = self.contentY + self.contentHgt - l
+            self.contentHgt -= l + 1
+        self.subwin = self.win.subwin(self.contentHgt,self.wid, self.contentY,0)
         self.subwin.scrollok(True)
-
-        self.__reformat()
         return self
 
-    def __reformat(self):
-        hgt,wid = self.subwin.getmaxyx()
-        wrapper = textwrap.TextWrapper(width=wid-1)
-        self.formatted = []
-        for line in self.text.split('\n'):
-            self.formatted.extend(wrapper.wrap(line) if line else [''])
-
     def display(self):
-        """Redisplay everything"""
-        if not self.formatted:
+        """Redisplay everything and flush changes to screen"""
+        if not self.subwin:
             self.resize()
         win = self.win
-        hgt, wid = win.getmaxyx()
-
-        tl,tn = self.topRegion
-        bl,bn = self.bottomRegion
 
         win.clear()
 
-        win.addstr(tl,0, self.prompt1)
+        win.addstr(0,0, self.prompt1)
 
-        self.displayText()
+        self.displayContent()
 
-        win.addstr(bl,0, self.prompt2)
+        if self.status:
+            win.addstr(self.statusY,0, self.status)
+
+        win.addstr(self.prompt2Y,0, self.prompt2)
         self.curspos = curses.getsyx()
         win.refresh()
         return self
 
-    def displayText(self):
-        """Display the text subwindow"""
-        tl,tn = self.textRegion
-        self.subwin.clear()
-        return self.displayTextRegion(self.offset, self.offset+tn-1)
-
-    def displayTextRegion(self, start, end):
-        """Display part of the text subwindow"""
-        win = self.win
-        subwin = self.subwin
-        offset = self.offset
-        tl,tn = self.textRegion
-
-        end = min(end, len(self.formatted)-1, tn+offset-1)
-
-        for i in xrange(start, end+1):
-            subwin.addstr(i-offset,0, toUtf(self.formatted[i]))
-
-        subwin.refresh()
+    def displayContent(self, line0=0, line1=None):
+        """Display the content. This method must be overridden to be
+        useful. Write out [line0 line1)."""
+        if line1 is None:
+            line1 = self.contentHgt
+        self.subwin.border()
+        self.subwin.addstr(1,1, "Add content [%d %d) offset %d" % (line0, line1, self.offset))
+        self.subwin.refresh()
         return self
 
     def refresh(self):
@@ -145,25 +140,28 @@ class PagerScreen(object):
         self.win.refresh()
         return self
 
-    def setText(self, text):
-        """Replace text. Caller should call refresh() after."""
-        self.text = text
-        __reformat(self)
-        if self.current >= len(self.formatted):
-            self.current = max(0, len(self.formatted) - self.textRegion[1] + 1)
-        self.displayText()
+    def setContent(self, content):
+        """Replace content. Caller should call refresh() after."""
+        self.content = content
+        self.displayContent()
         return self
 
     def setTopPrompt(self, prompt):
         """Replace top prompt. Caller should call refresh() after."""
         self.prompt1 = prompt
-        self.win.addstr(self.topRegion[0],0, prompt)
+        self.win.addstr(0,0, prompt)
         return self
 
     def setBottomPrompt(self, prompt):
         """Replace bottom prompt. Caller should call refresh() after."""
         self.prompt2 = prompt
-        self.win.addstr(self.bottomRegion[0],0, prompt)
+        self.win.addstr(self.prompt2Y,0, prompt)
+        return self
+
+    def setStatus(self, prompt):
+        """Replace status. Caller should call refresh() after."""
+        self.status = status
+        self.win.addstr(self.statusY,0, prompt)
         return self
 
     def getOffset(self): return self.offset
@@ -172,80 +170,77 @@ class PagerScreen(object):
         """Adjust offset to the given value, scrolling if needed.
         Returns True if offset changed, False otherwise (because already
         at the end of the range.)"""
-        if i < 0 or i >= len(self.formatted) or i == self.offset:
-            return False
+        if i < 0 or i > self.contentLen - self.contentHgt + 1 or i == self.offset:
+            return self
         subwin = self.subwin
         offset = self.offset
         delta = i - offset
-        tl,tn = self.textRegion
         # Less than SCROLL_THRESH lines change, scroll and just fill in the gaps
         if i < offset and i >= offset-SCROLL_THRESH:
             # scroll down
             subwin.scroll(delta)
             self.offset = i
-            self.displayTextRegion(i, offset)
+            self.displayContent(0, -delta)
         elif i > offset and i < offset+SCROLL_THRESH:
             # scroll up
             subwin.scroll(delta)
             self.offset = i
-            self.displayTextRegion(offset+tn-delta, i+tn-delta)
+            self.displayContent(self.contentHgt - delta, self.contentHgt)
         else:
             # Beyond that, complete refresh
             self.offset = i
-            self.displayText()
-        self.win.refresh()
-        return True
+            self.subwin.clear()
+            self.displayContent()
+        return self
 
     def scrollBy(self, i):
         return self.scrollTo(self.offset+i)
 
     def pageUp(self):
         if self.offset <= 0:
-            return False
-        tl,tn = self.textRegion
-        self.offset -= tn - 1
+            return self
+        self.offset -= self.contentHgt - 1
         if self.offset < 0: self.offset = 0
-        self.displayText()
-        self.win.refresh()
-        return True
+        self.subwin.clear()
+        self.displayContent()
+        return self
 
     def pageDown(self):
-        tl,tn = self.textRegion
         offset = self.offset
-        offset += tn - 1
-        if offset >= len(self.formatted):
-            return False
+        offset += self.contentHgt - 1
+        if offset >= self.contentLen:
+            return self
         self.offset = offset
-        self.displayText()
-        self.win.refresh()
-        return True
+        self.subwin.clear()
+        self.displayContent()
+        return self
 
     def pageHome(self):
         return self.scrollTo(0)
 
     def pageEnd(self):
-        return self.scrollTo(len(self.formatted) - self.textRegion[1] + 1)
+        return self.scrollTo(self.contentLen - self.contentHgt + 1)
 
     def commonKeys(self, c):
         """Handle common keys that scroll up and down. Return
         False if key was not handled by this method."""
         if c in (ord('\n'), ord('j'), CTRL_N, CTRL_E, curses.KEY_DOWN):
-            self.scrollBy(1)
+            self.scrollBy(1).refresh()
             return True
         if c in (ord('k'), CTRL_P, CTRL_Y, curses.KEY_UP):
-            self.scrollBy(-1)
+            self.scrollBy(-1).refresh()
             return True
         if c in (ord('>'), CTRL_F, curses.KEY_NPAGE, ord(' ')):
-            self.pageDown()
+            self.pageDown().refresh()
             return True
         if c in (ord('<'), CTRL_B, curses.KEY_PPAGE):
-            self.pageUp()
+            self.pageUp().refresh()
             return True
         if c in (ord('^'), curses.KEY_HOME):
-            self.pageHome()
+            self.pageHome().refresh()
             return True
         if c in (ord('$'), curses.KEY_END):
-            self.pageEnd()
+            self.pageEnd().refresh()
             return True
         if c in (curses.KEY_RESIZE, CTRL_L):
             writeLog("Executing resize")
@@ -268,116 +263,124 @@ class PagerScreen(object):
 
 
 
-class OptionScreen(PagerScreen):
-    """Displays a list of options and a prompt. If the user selects 'h',
+
+class PagerScreen(ContentScreen):
+    """Displays text and a prompt. If the user selects '?',
+    displays help text. If the user enters a command, returns the keycode
+    of that command. Any method that doesn't have a specific
+    return value returns self, for chaining."""
+    def __init__(self, win, text, prompt1, prompt2, helpText):
+        writeLog("New PagerScreen, text:")
+        super(PagerScreen,self).__init__(win, prompt1, prompt2, text, None, helpText)
+        self.formatted = None
+
+    def resize(self):
+        super(PagerScreen,self).resize()
+        self.__reformat()
+        return self
+
+    def __reformat(self):
+        wrapper = textwrap.TextWrapper(width=self.wid-1)
+        self.formatted = []
+        for line in self.content.split('\n'):
+            self.formatted.extend(wrapper.wrap(line) if line else [''])
+        self.contentLen = len(self.formatted)
+
+    def displayContent(self, line0=0, line1=None):
+        """Display the text subwindow"""
+        if line1 is None:
+            line1 = self.contentHgt
+        offset = self.offset
+        subwin = self.subwin
+
+        for i in xrange(line0, line1):
+            if i+offset >= self.contentLen:
+                break
+            subwin.addstr(i,0, toUtf(self.formatted[offset+i]))
+        subwin.refresh()
+        return self
+
+    def setContent(self, text):
+        """Replace text. Caller should call refresh() after."""
+        self.content = text
+        __reformat(self)
+        if self.offset >= self.contentLen:
+            self.offset = self.contentLen - 2
+        self.displayContent()
+        return self
+
+
+
+class OptionScreen(ContentScreen):
+    """Displays a list of options and a prompt. If the user selects '?',
     displays help text. If the user enters a command, returns the keycode
     of that command. If the user selects an option, returns the numeric
     index into the list. Any method that doesn't have a specific
     return value returns self, for chaining."""
-    optKeys = "abcdefgijklmorstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    optKeys = "abcdefghijklmorstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     def __init__(self, win, options, prompt1, prompt2, helpText,
                 cmds, long_cmds=None):
-        super(OptionScreen,self).__init__(win, None, prompt1, prompt2, helpText)
-        self.options = options
-        # String of commands. Commands "h \nnp<>^$q" are implied.
-        self.cmds = cmds = cmds + "h \nnp<>^$q"
+        super(OptionScreen,self).__init__(win, prompt1, prompt2, options, "", helpText)
+        self.content = options
+        self.contentLen = len(options)
+        # String of commands. Commands "? \nnp<>^$q" are implied.
+        self.cmds = cmds = cmds + "? \nnp<>^$q"
         self.long_cmds = long_cmds
         self.optKeys = "".join([c for c in self.optKeys if c not in cmds])
         self.current = 0
-        self.maxopts = 0        # Max options that will fit on the screen
+        self.maxopts = 0    # max options that can be displayed
 
     def resize(self):
-        hgt, wid = self.win.getmaxyx()
-
-        # Allocate space for the 4 or 5 fields:
-        self.topRegion = (0,1)            # Region of top prompt
-        self.statusRegion = (hgt-2, 1)    # status messages go here
-        self.bottomRegion = (hgt-1, 1)    # Region at the bottom
-        if self.long_cmds:
-            cn = len(self.long_cmds)
-            cl = self.statusRegion[0] - 1 - cn
-            self.cmdRegion = (cl,cn)
-            self.optRegion = (2, cl-3)
-        else:
-            bl = self.bottomRegion[0]
-            self.optRegion = (2, bl-3)
-
-        # Create subwindow for options
-        ol,on = self.optRegion
-        self.subwin = self.win.subwin(on,wid, ol,0)
-        self.maxopts = min(on, len(self.optKeys))
-        return self
+        super(OptionScreen,self).resize()
+        self.maxopts = min(len(self.optKeys), self.contentHgt)
 
     def display(self):
         """Redisplay everything"""
-        win = self.win
-        long_cmds = self.long_cmds
+        super(OptionScreen,self).display()
+        long_cmds = self.long_options
         if long_cmds:
-            nlong = len(long_cmds) if long_cmds else 0
-        hgt, wid = win.getmaxyx()
-
-        tl,tn = self.topRegion
-        bl,bn = self.bottomRegion
-        if long_cmds:
-            cl,cn = self.cmdRegion
-
-        win.clear()
-
-        win.addstr(tl,0, self.prompt1)
-
-        self.displayOpts()
-
-        if long_cmds:
+            win = self.win
+            cl = self.long_optionsY
             for cmd in long_cmds:
                 win.addstr(cl,1, cmd)
                 cl += 1
-
-        win.addstr(bl,0, self.prompt2)
-        win.refresh()
+            win.refresh()
         return self
 
-    def displayOpts(self):
+    def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
-        win = self.win
+        if line1 is None:
+            line1 = self.contentHgt
         subwin = self.subwin
-        options = self.options
+        options = self.content
         offset = self.offset
         current = self.current
         optKeys = self.optKeys
-        ol,on = self.optRegion
-        hgt, wid = win.getmaxyx()
-
-        subwin.clear()
+        wid = self.wid
 
         #writeLog("options: " + str(options))
-        n = min(self.maxopts, len(options) - offset)
-        for i in range(n):
+        for i in xrange(line0, line1):
+            if i+offset >= self.contentLen or i >= len(optKeys):
+                break
             subwin.addstr(i,1, optKeys[i])
-            subwin.addstr(i,3, str(options[i+offset])[:wid-4])
+            writeLog("i=%d, i+offset=%d, len(options)=%d" % (i, i+offset, len(options)))
+            subwin.addstr(i,3, toUtf(str(options[i+offset])[:wid-4]))
             if i+offset == current:
                 subwin.addstr(i,0, '>')
-
         subwin.refresh()
         return self
 
-    def setOptions(self, options):
+    def setContent(self, options):
         """Replace options. Caller should call refresh() after."""
-        self.options = options
-        if self.current >= len(options):
-            self.scrollTo(len(options)-1)
-        else:
-            self.displayOpts()
+        self.content = options
+        self.contentLen = len(options)
+        if self.offset >= self.contentLen:
+            self.offset = self.contentLen - 2
+        if self.current >= self.contentLen:
+            self.current = self.contentLen - 1
+        self.displayContent()
+        subwin.refresh()
         return self
-
-    def setStatus(self, status):
-        """Replace status area. Caller should call refresh() after."""
-        cursor = curses.getsyx()
-        self.win.addstr(self.statusRegion[0],0, status)
-        self.win.clrtoeol()
-        curses.setsyx(cursor[0],cursor[1])
-        return self
-
-    def getOffset(self): return self.offset
 
     def getCurrent(self): return self.current
 
@@ -385,12 +388,13 @@ class OptionScreen(PagerScreen):
         """Adjust index to the given value, scrolling if needed.
         Returns True if index changed, False otherwise (because already
         at the end of the range.)"""
-        if i < 0 or i >= len(self.options):
+        if i < 0 or i >= self.contentLen:
             return False
         subwin = self.subwin
         current = self.current
         offset = self.offset
-        if i >= offset and i < offset + self.maxopts:
+        delta = i - offset      # new position, relative to top of screen
+        if delta >= 0 and delta < self.maxopts:
             # just move the caret
             writeLog("just move")
             subwin.addstr(current-offset, 0, ' ')
@@ -398,22 +402,19 @@ class OptionScreen(PagerScreen):
             subwin.refresh()
             self.current = i
             return True
-        # TODO: Out of the window, but no more than 5 lines, we scroll
-        # Beyond that, complete refresh
-        if i > current:
-            # Scroll down
-            self.current = i
-            #self.offset = i
-            self.offset = i - self.maxopts + 1
-            self.displayOpts()
+        elif delta < 0:
+            # No point in scrolling since the option letters have to be
+            # redrawn either way.
+            self.offset = self.current = i
+            subwin.clear()
+            self.displayContent()
+            return True
         else:
-            # Scroll up
             self.current = i
-            self.offset = i
-            #self.offset = i - self.maxopts + 1
-            if self.offset < 0: self.offset = 0
-            self.displayOpts()
-        return True
+            self.offset = i - self.maxopts + 1
+            subwin.clear()
+            self.displayContent()
+            return True
 
     def moveBy(self, i):
         return self.moveTo(self.current+i)
@@ -424,24 +425,24 @@ class OptionScreen(PagerScreen):
         self.offset -= self.maxopts - 1
         if self.offset < 0: self.offset = 0
         self.current = self.offset
-        self.displayOpts()
+        self.displayContent()
         return True
 
     def pageDown(self):
         offset = self.offset
         offset += self.maxopts - 1
-        if offset >= len(self.options):
+        if offset >= len(self.content):
             return False
         self.offset = offset
         self.current = offset
-        self.displayOpts()
+        self.displayContent()
         return True
 
     def pageHome(self):
         return self.moveTo(0)
 
     def pageEnd(self):
-        return self.moveTo(len(self.options) - 1)
+        return self.moveTo(len(self.content) - 1)
 
     def commonKeys(self, c):
         """Handle common keys that scroll up and down. Return
@@ -485,7 +486,7 @@ class OptionScreen(PagerScreen):
         if idx >= self.maxopts:
             return -1
         idx += self.offset
-        if idx >= len(self.options):
+        if idx >= len(self.content):
             return -1
         return idx
 
@@ -509,15 +510,14 @@ class ColumnOptionScreen(OptionScreen):
         self.cwidths = [(0,wid/2), (wid/2,wid/2)]
         return self
 
-    def displayOpts(self):
+    def displayContent(self):
         """Display the options subwindow"""
         win = self.win
         subwin = self.subwin
-        options = self.options
+        options = self.content
         offset = self.offset
         current = self.current
         optKeys = self.optKeys
-        ol,on = self.optRegion
         hgt, wid = win.getmaxyx()
 
         subwin.clear()

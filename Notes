@@ -1,0 +1,26 @@
+
+Alpine message selection looks like:
+
+  ALPINE 2.26   MESSAGE INDEX                              Folder: Trash                              Message 135,049 of 140,221
+
+    135049 Oct  5     Petco                               (60K) We have received your order.
+  A 135050 Oct  5     Don Drewecki via GangOf4             (8K) [GangOf4] Especially for Bob O
+    135051 Oct  5     Petco                               (65K) It’s time to pick up your order!
+
+  ...
+
+? Help                < FldrList            P PrevMsg                - PrevPage          D Delete              R Reply
+O OTHER CMDS          > [ViewMsg]           N NextMsg              Spc NextPage          U Undelete            F Forward
+? Help                M Main Menu           C Compose              Tab NextNew           % Print               S Save                 
+O OTHER CMDS          Q Quit Alpine         G GotoFldr               W WhereIs           T TakeAddr            E Export              
+
+Flags:
+
+  D	deleted
+  N	new
+  A	answered
+  F	forwarded
+  +	direct to you
+  -	cc to you
+  X	selected
+  *	flagged as important

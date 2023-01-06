@@ -166,7 +166,7 @@ class messageSummary(object):
         self.uid = None
         self.key = None
     def __repr__(self):
-        return "<MboxMessage \"%s\">" % self.subject
+        return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):
         status = None
         if self.Status is not None:
