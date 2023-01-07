@@ -44,14 +44,14 @@ class ShortMessage(object):
         self.win.clear()
         self.win.addstr(1,0,self.message)
         self.win.refresh()
+        return self
     def wait(self):
         c = self.win.getch()
         self.win.clear()
         self.win.refresh()
         return c
     def displayAndWait(self):
-        self.display()
-        return self.wait()
+        return self.display().wait()
 
 
 SCROLL_THRESH = 5
@@ -62,21 +62,23 @@ class ContentScreen(object):
     line, and a bottom prompt. It handles some basic one-character
     commands and window resizes. Subclasses must implement
     displayContent() for this to be useful. Set status=None
-    to disable status line, else use e.g. "" for empty status"""
-    def __init__(self, win, prompt1, prompt2, content, status, helpText):
+    to disable status line, else use e.g. "" for empty status
+    shortHelp is an array [cols][rows] of short help messages,
+    e.g. (("? Help, "q Back"), ("n Next", "< page up"), ("p Prev", "> page down"), ("CR select",))
+    """
+    def __init__(self, win, prompt, shortHelp, content, status):
         self.win = win
         self.content = content
         self.contentLen = 100   # subclass must fix this up
-        self.prompt1 = prompt1
-        self.prompt2 = prompt2
-        self.long_options = None
+        self.prompt = prompt
+        self.shortHelp = shortHelp
         self.status = status
-        self.helpText = helpText
         self.offset = 0
+        self.busy = False       # user can't interact right now
         self.subwin = None
         # Items below to be filled in by resize
         self.hgt, self.wid = self.win.getmaxyx()
-        self.contentY = self.statusY = self.prompt2Y = 0
+        self.contentY = self.statusY = self.helpY = 0
         self.contentHgt = 0
         self.subwin = None
 
@@ -86,20 +88,23 @@ class ContentScreen(object):
         changes size, if the status line is enabled/disabled, and
         before first calling display(),"""
         self.hgt, self.wid = self.win.getmaxyx()
-        self.contentY = 2
-        self.prompt2Y = self.hgt - 1
-        if self.status is None:
-            self.contentHgt = self.hgt - 4
-        else:
-            self.statusY = self.hgt - 2
-            self.contentHgt = self.hgt - 5
 
-        # If long_options is specified, steal space to display them
-        # from the content window.
-        if self.long_options:
-            l = len(self.long_options)
-            self.long_optionsY = self.contentY + self.contentHgt - l
-            self.contentHgt -= l + 1
+        # Find the heights of all the regions, content region gets
+        # the leftover.
+        # Top prompt and status are always 1 line. ShortHelp is normally
+        # two lines, but we don't enforce that. One blank line between
+        # regions except below status.
+        # promptY = 0
+        self.contentY = 2
+        self.helpY = y = self.hgt - len(self.shortHelp) + 1
+        writeLog("helpY = %d" % self.helpY)
+        if self.status is not None:
+            self.statusY = y-1
+            y -= 3
+        else:
+            y -= 2
+        self.contentHgt = y - self.contentY + 1
+        writeLog("hgt=%d, wid=%d, y=%d, 0" % (self.contentHgt,self.wid, self.contentY))
         self.subwin = self.win.subwin(self.contentHgt,self.wid, self.contentY,0)
         self.subwin.scrollok(True)
         return self
@@ -112,14 +117,14 @@ class ContentScreen(object):
 
         win.clear()
 
-        win.addstr(0,0, self.prompt1)
-
         self.displayContent()
 
         if self.status:
             win.addstr(self.statusY,0, self.status)
 
-        win.addstr(self.prompt2Y,0, toUtf(self.prompt2))
+        self.displayShortHelp()
+
+        win.addstr(0,0, self.prompt)
         self.curspos = curses.getsyx()
         win.refresh()
         return self
@@ -134,6 +139,28 @@ class ContentScreen(object):
         self.subwin.refresh()
         return self
 
+    def displayShortHelp(self):
+        """Display the short help at the bottom of the screen. Items
+        that won't fit are discarded, so put the least important items
+        at the end."""
+        shortHelp = self.shortHelp
+        # Compute column widths
+        wid = self.wid
+        cwids = map(max, [map(len, x) for x in shortHelp])
+        cwid = sum(cwids)
+        pad = max((wid - cwid) // len(cwids), 2)
+        x = 0
+        win = self.win
+        for i,col in enumerate(shortHelp):
+            cw = cwids[i]
+            if x + cw >= wid:
+                break
+            y = self.helpY
+            for s in col:
+                win.addstr(y,x, s)
+                y += 1
+            x += cw + pad
+
     def refresh(self):
         """Tell curses to bring screen up to date."""
         self.win.refresh()
@@ -147,14 +174,18 @@ class ContentScreen(object):
 
     def setTopPrompt(self, prompt):
         """Replace top prompt. Caller should call refresh() after."""
-        self.prompt1 = prompt
+        self.prompt = prompt
+        self.win.move(0,0)
+        self.win.clrtoeol()
         self.win.addstr(0,0, prompt)
         return self
 
-    def setBottomPrompt(self, prompt):
-        """Replace bottom prompt. Caller should call refresh() after."""
-        self.prompt2 = prompt
-        self.win.addstr(self.prompt2Y,0, prompt)
+    def setShortHelp(self, shortHelp):
+        """Replace bottom prompt. Caller should call refresh() after.
+        new shortHelp must be the same number of lines as before. Caller
+        should call refresh() after."""
+        self.shortHelp = shortHelp
+        self.displayShortHelp()
         return self
 
     def setStatus(self, prompt):
@@ -264,13 +295,12 @@ class ContentScreen(object):
 
 
 class PagerScreen(ContentScreen):
-    """Displays text and a prompt. If the user selects '?',
-    displays help text. If the user enters a command, returns the keycode
-    of that command. Any method that doesn't have a specific
-    return value returns self, for chaining."""
-    def __init__(self, win, text, prompt1, prompt2, helpText):
+    """Displays text and a prompt.  If the user enters a command,
+    returns the keycode of that command. Any method that doesn't
+    have a specific return value returns self, for chaining."""
+    def __init__(self, win, text, prompt, shortHelp):
         writeLog("New PagerScreen, text:")
-        super(PagerScreen,self).__init__(win, prompt1, prompt2, text, None, helpText)
+        super(PagerScreen,self).__init__(win, prompt, shortHelp, text, None)
         self.formatted = None
 
     def resize(self):
@@ -313,20 +343,18 @@ class PagerScreen(ContentScreen):
 
 
 class OptionScreen(ContentScreen):
-    """Displays a list of options and a prompt. If the user selects '?',
-    displays help text. If the user enters a command, returns the keycode
-    of that command. If the user selects an option, returns the numeric
-    index into the list. Any method that doesn't have a specific
-    return value returns self, for chaining."""
+    """Displays a list of options and a prompt. If the user enters
+    a command, returns the keycode of that command. If the user
+    selects an option, returns the numeric index into the list. Any
+    method that doesn't have a specific return value returns self,
+    for chaining."""
     optKeys = "abcdefghijklmorstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    def __init__(self, win, options, prompt1, prompt2, helpText,
-                cmds, long_cmds=None):
-        super(OptionScreen,self).__init__(win, prompt1, prompt2, options, "", helpText)
+    def __init__(self, win, options, prompt, shortHelp, cmds):
+        super(OptionScreen,self).__init__(win, prompt, shortHelp, options, "")
         self.content = options
         self.contentLen = len(options)
         # String of commands. Commands "? \nnp<>^$q" are implied.
         self.cmds = cmds = cmds + "? \nnp<>^$q"
-        self.long_cmds = long_cmds
         self.optKeys = "".join([c for c in self.optKeys if c not in cmds])
         self.current = 0
         self.maxopts = 0    # max options that can be displayed
@@ -334,19 +362,6 @@ class OptionScreen(ContentScreen):
     def resize(self):
         super(OptionScreen,self).resize()
         self.maxopts = min(len(self.optKeys), self.contentHgt)
-
-    def display(self):
-        """Redisplay everything"""
-        super(OptionScreen,self).display()
-        long_cmds = self.long_options
-        if long_cmds:
-            win = self.win
-            cl = self.long_optionsY
-            for cmd in long_cmds:
-                win.addstr(cl,1, cmd)
-                cl += 1
-            win.refresh()
-        return self
 
     def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
@@ -498,10 +513,8 @@ class OptionScreen(ContentScreen):
 
 class ColumnOptionScreen(OptionScreen):
     """Similar to OptionScreen, but displays multiple values in columns."""
-    def __init__(self, win, options, prompt1, prompt2, helpText,
-                cmds, long_cmds=None):
-        super(ColumnOptionScreen,self).__init__(win, options, prompt1, prompt2, helpText,
-                cmds, long_cmds)
+    def __init__(self, win, options, prompt, shortHelp, cmds):
+        super(ColumnOptionScreen,self).__init__(win, options, prompt, shortHelp, cmds)
         self.cwidths = []
 
     def resize(self):

@@ -210,7 +210,10 @@ def SplashScreen(win):
     config.set("global","splashscreen", VERSION)
 
 def HelpScreen(win, text):
-    screens.PagerScreen(win, text, 'Help', u"[↑ ↓ PGDN PGUP] to navigage, 'q' to exit help: ", None).displayAndWait()
+    screens.PagerScreen(win, text, 'Help',
+        (("↑ Up one", "↓ Down one"), ("PGUP < Page up", "PGDN > Page down"),
+            ("HOME ^ Top", "END  $ Bottom"), ("q Exit help",))) \
+            .displayAndWait()
 
 
 #       ACCOUNT SELECTION
@@ -223,6 +226,7 @@ More commands:
 
  +             add account
  -             delete currently-selected account
+ E             edit currently-selected account
  q             exit trm
  x             same"""
 
@@ -245,8 +249,8 @@ def AccountScreen(win, accounts):
             continue
         if optScreen.commonKeys(ic):
             #pct = percent(optScreen.getCurrent(), len(opts))
-            #optScreen.setBottomPrompt("Select account %d%%, ? for help: " % pct)
-            optScreen.setBottomPrompt("Select account. %d/%d, ? for help: " % \
+            #optScreen.setTopPrompt("Select account %d%%, F1 or ? for help: " % pct)
+            optScreen.setTopPrompt("Select account. %d/%d, F1 or ? for help: " % \
                 (optScreen.getCurrent()+1, len(opts)))
             optScreen.refresh()
             continue
@@ -263,16 +267,17 @@ def AccountScreen(win, accounts):
 def AccountScreenSetup(win, accounts, opts):
     long_cmds = ["+ add email account", "- delete selected email account",
         "E edit selected email account"]
+    # Commands:
+    #  ?  Help       ↑ p Prev   PGUP < PrevPage  HOME ^ Top     + Add     E Edit
+    #  CR Select     ↓ n Next   PGDN > NextPage  END  $ Bottom  - Remove
 
     optScreen = screens.OptionScreen(win, opts, "Select email account",
-        "choose: ",
-        "help",
-        "ENP+-",
-        long_cmds)
+        (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
+            ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
+            ("+ Add", "- Remove"), ("E Edit",)),
+        "E+-")
     optScreen.resize()
-    #pct = percent(optScreen.getCurrent(), len(opts))
-    #optScreen.setBottomPrompt("Select account %d%%, ? for help: " % pct)
-    optScreen.setBottomPrompt("Select account. %d/%d, ? for help: " % \
+    optScreen.setTopPrompt("Select account. %d/%d, F1 or ? for help: " % \
         (optScreen.getCurrent()+1, len(opts)))
     return optScreen
 
@@ -329,16 +334,15 @@ More commands:
         return True
 
     def screenSetup(self):
-        """Create appropriate OptionsScreen object."""
-        long_cmds = ["+ add mailbox", "- delete selected mailbox"]
+        """Create appropriate OptionScreen object."""
 
         self.optScreen = optScreen = screens.OptionScreen(self.win, self.mboxes, "Select mailbox",
-            "choose: ",
-            "help",
-            "NP+-",
-            long_cmds)
+            (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
+                ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
+                ("+ Add", "- Remove")),
+            "+-")
         optScreen.resize()
-        optScreen.setBottomPrompt("Select mailbox. %d/%d, ? for help: " % \
+        optScreen.setTopPrompt("Select mailbox. %d/%d, F1 or ? for help: " % \
             (optScreen.getCurrent()+1, len(self.mboxes)))
 
     def display(self):
@@ -365,7 +369,7 @@ More commands:
                 self.showHelp()
                 continue
             if optScreen.commonKeys(ic):
-                optScreen.setBottomPrompt("Select mailbox. %d/%d, ? for help: " % \
+                optScreen.setTopPrompt("Select mailbox. %d/%d, F1 or ? for help: " % \
                     (optScreen.getCurrent()+1, len(mboxes)))
                 optScreen.refresh()
                 continue
@@ -416,7 +420,7 @@ class ImapMboxScreen(MailboxScreen):
         return True
 
     def screenSetup(self):
-        """Create appropriate OptionsScreen object."""
+        """Create appropriate OptionScreen object."""
         long_cmds = ["A toggle view all mailboxes", "S manage subscribed mailboxes",
             "+ add mailbox", "- delete selected mailbox"]
 
@@ -488,7 +492,7 @@ class ImapMboxScreen(MailboxScreen):
         return True
 
     def __bottomPrompt(self):
-        self.optScreen.setBottomPrompt("Select mailbox. %d/%d, ? for help: " % \
+        self.optScreen.setTopPrompt("Select mailbox. %d/%d, F1 or ? for help: " % \
             (self.optScreen.getCurrent()+1, len(self.mboxes)))
 
 
@@ -505,12 +509,13 @@ MESSAGE_HELP_BOTTOM = u"""
  D             delete entire thread
  m             mark as read
  M             mark entire thread as read
+ u             mark as unread
+ U             mark entire thread as unread
  O             set selector order
  R             reverse selector order
- t             threaded view
- u             unthreaded view
- +             expand selected thread
- -             unexpand selected thread
+ t             toggle threaded view (TODO)
+ +             expand selected thread (TODO)
+ -             unexpand selected thread (TODO)
  ^R            refresh view - re-read mailbox (can take a while)
  q             commit changes, return to mailbox selection
  x             return without saving changes
@@ -530,13 +535,19 @@ Search:
  /regex/[modifiers][:cmd:cmd…]        search for messages matching regex
 
     modifiers; zero or more of:
-        s       search Subject line (default)
+        s       search Subject line (default if no modifiers specified)
         f       search From line
         t       search To line
         h       search all headers (potentially slow)
         b       search entire body (potentially very slow)
 
-    search commands: zero or more of :d,:D,:m,:M.
+    search commands: zero or more of:
+        :d       delete (move to trash)
+        :m       move to INBOX
+        :m box   move to specified mailbox
+        :a file  append to file
+        :| cmd   pipe through shell command
+
     With no commands, switches to a view of only matching articles.
     Use "/<cr>" to clear the filter and view everything again."""
 
@@ -572,8 +583,7 @@ def MessageScreen(win, account, mbox):
             continue
         # TODO: N,P,d,D,m,M,O,R,t,u
         if optScreen.commonKeys(ic):
-            optScreen.setBottomPrompt("Select message. %d/%d, ? for help: " % \
-                (optScreen.getCurrent()+1, len(messages)))
+            MessageScreenPrompt(win, optScreen, mbox, messages)
             optScreen.refresh()
             continue
         idx = optScreen.isOptionKey(ic)
@@ -587,18 +597,21 @@ def MessageScreen(win, account, mbox):
         # TODO: detect changes
 
 def MessageScreenSetup(win, account, mbox, messages):
+    optScreen = MessageOptionScreen(win, messages, mbox.name,
+        (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
+            ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
+            ("+ Add", "- Remove"), ("E Edit",)),
+        "NPdDmMuUORt")
+    optScreen.resize()
+    MessageScreenPrompt(win, optScreen, mbox, messages)
+    return optScreen
+
+def MessageScreenPrompt(win, optScreen, mbox, messages):
     topPrompt = u"%s   %d messages" % (mbox.name, len(messages))
     if mbox.nNew is not None: topPrompt += ", %d new" % mbox.nNew
     if mbox.nUnread is not None: topPrompt += ", %d unread" % mbox.nUnread
-    optScreen = MessageOptionScreen(win, messages, topPrompt,
-        "choose: ",
-        "help",
-        "NPdDmMORtu",
-        None)
-    optScreen.resize()
-    optScreen.setBottomPrompt("Select message. %d/%d, ? for help: " % \
-        (optScreen.getCurrent()+1, len(messages)))
-    return optScreen
+    topPrompt += ": %d/%d, F1 or ? for help: " % (optScreen.getCurrent()+1, len(messages))
+    optScreen.setTopPrompt(topPrompt)
 
 def MessageShowUpdate(win, mbox, count, final, pct, msg):
     # If this is called with final=False, then it's a good bet that
