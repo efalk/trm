@@ -77,8 +77,9 @@ class Mbox(mailbox):
     def getOverview(self, callback):
         """Get all of the Subject, From, To, and Date headers.
         Return the total # of messages.  As this could conceivably
-        take a lot of time, an optional callback(mbox, count, isFinal, pct, message)
-        is called every 0.5 seconds or so, and at the conclusion."""
+        take a lot of time, an optional callback(mbox, count,
+        isFinal, pct, message) is called every 0.5 seconds or so,
+        and at the conclusion."""
 
         # TODO: run this in a background thread
 
@@ -93,6 +94,8 @@ class Mbox(mailbox):
         msgcount = 0    # Only check every 100 messages
         offset = 0      # file offset
         lastOffset = 0  # Offset of last seen "From " line.
+        self.nUnread = 0
+        self.nNew = 0
         with open(self.path, "r") as ifile:
             flock = dotlock.FileLock(ifile)
             dlock = dotlock.DotLock(self.path)
@@ -113,6 +116,8 @@ class Mbox(mailbox):
                     self.messages.append(msg)
                     self.msgdict[key] = msg
                     msgcount += 1
+                    if msg.status & messageSummary.FLAG_NEW: self.nNew += 1
+                    if not (msg.status & messageSummary.FLAG_READ): self.nUnread += 1
                     if msgcount % 10 == 0:
                         now = time.time()
                         if now > lastcb + 0.5:
@@ -152,8 +157,15 @@ class Mbox(mailbox):
         if "To" in fullhdrs: msg.To = fullhdrs["To"]
         if "Subject" in fullhdrs: msg.Subject = fullhdrs["Subject"]
         if "Date" in fullhdrs: msg.Date = fullhdrs["Date"]
-        if "Status" in fullhdrs: msg.Status = fullhdrs["Status"]
-        if "X-Status" in fullhdrs: msg.XStatus = fullhdrs["X-Status"]
+        if "Status" in fullhdrs:
+            status = fullhdrs["Status"]
+            if 'R' in status: msg.status |= messageSummary.FLAG_READ
+            if 'O' not in status: msg.status |= messageSummary.FLAG_NEW
+        if "X-Status" in fullhdrs:
+            status = fullhdrs["X-Status"]
+            if 'A' in status: msg.status |= messageSummary.FLAG_ANSWERED
+            if 'F' in status: msg.status |= messageSummary.FLAG_FLAGGED
+            if 'D' in status: msg.status |= messageSummary.FLAG_DELETED
         if "X-UID" in fullhdrs: msg.Uid = fullhdrs["X-UID"]
         if "Message-Id" in fullhdrs: msg.MessageId = fullhdrs["Message-Id"]
         elif "Message-ID" in fullhdrs: msg.MessageId = fullhdrs["Message-ID"]

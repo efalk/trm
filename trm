@@ -64,7 +64,7 @@ SPLASH_SCREEN = """
 
         Welcome to trm 1.0 (19 April 2023).
 
-        Type '?' at any prompt to get help.
+        Type '?' or F1 at any prompt to get help.
 
         This message will not be displayed again unless it is updated with new
         information.
@@ -84,22 +84,20 @@ COMMON_HELP = u"""
 
 Common commands:
 
- ?        this text
- n        next
- p        previous
- ^E       scroll up 1 line
- > ^F SP  next page
- < ^B     previous page
- ^        top
- $        end
- CR       select current item
- ^C       exit trm
- ESC      return to previous screen
- ^L       refresh screen
+ F1 ?          this text
+ n ↓           next
+ p ↑           previous
+ ^E            scroll up 1 line
+ PGDN > ^F SP  next page
+ PGUP < ^B     previous page
+ HOME ^        top
+ END  $        end
+ CR            select current item
+ ^L            refresh screen
+ ^C            exit trm
+ ESC           return to previous screen
 
- a-zA-Z0-9      select indicated item
-
- ↑, ↓, PGDN, PGUP, HOME, END also work for navigating.
+ a-zA-Z0-9     select indicated item
 """
 # ^Y       scroll down 1 line           TODO terminal converts ^Y to SIGSTP
 
@@ -212,7 +210,7 @@ def SplashScreen(win):
     config.set("global","splashscreen", VERSION)
 
 def HelpScreen(win, text):
-    screens.PagerScreen(win, text, 'Help', "'q' to exit help: ", None).displayAndWait()
+    screens.PagerScreen(win, text, 'Help', u"[↑ ↓ PGDN PGUP] to navigage, 'q' to exit help: ", None).displayAndWait()
 
 
 #       ACCOUNT SELECTION
@@ -223,9 +221,10 @@ locally on this machine, if any. Use '+' key to add a new
 account.""" + COMMON_HELP + """
 More commands:
 
- +      add account
- -      delete currently-selected account
- q      exit trm"""
+ +             add account
+ -             delete currently-selected account
+ q             exit trm
+ x             same"""
 
 def AccountScreen(win, accounts):
     """Prompt user to select an account. When the user selects
@@ -238,9 +237,9 @@ def AccountScreen(win, accounts):
     while True:
         ic = win.getch()
         writeLog("Received character %d" % ic)
-        if ic == ord('q'):
+        if ic in (ord('q'), ord('x'), ESC):
             return ic
-        if ic == ord('?'):
+        if ic in (ord('?'), curses.KEY_F1):
             HelpScreen(win, ACCOUNT_SCREEN_HELP)
             optScreen.display()
             continue
@@ -310,10 +309,10 @@ class MailboxScreen(object):
     HELP_BOTTOM = """
 More commands:
 
- +      add mailbox
- -      delete currently-selected mailbox
- q      exit, return to account selection
- x      exit without saving changes
+ +             add mailbox
+ -             delete currently-selected mailbox
+ q             return to account selection
+ x             same
 
  /regex/        search for items matching regex"""
 
@@ -362,7 +361,7 @@ More commands:
             if ic in (ord('q'), ord('x'), ESC):
                 self.account.disconnect()
                 return ic
-            if ic == ord('?'):
+            if ic in (ord('?'), curses.KEY_F1):
                 self.showHelp()
                 continue
             if optScreen.commonKeys(ic):
@@ -400,14 +399,12 @@ class MboxScreen(MailboxScreen):
 class ImapMboxScreen(MailboxScreen):
     """Support for imap."""
     HELP_BOTTOM = u"""
-More commands:
-
- A      show all mailboxes, including unsubscribed
- S      manage subscribed mailboxes
- +      add mailbox
- -      delete currently-selected mailbox
- q      exit, return to account selection
- x      exit without saving changes
+ A             show all mailboxes, including unsubscribed
+ S             manage subscribed mailboxes
+ +             add mailbox
+ -             delete currently-selected mailbox
+ q             return to account selection
+ x             same
 
  /regex/        search for items matching regex"""
 
@@ -500,41 +497,46 @@ More commands:
 
 MESSAGE_HELP_TOP = u"""Select the message to read."""
 MESSAGE_HELP_BOTTOM = u"""
+ N             next unread
+ ^N            next unread with same subject
+ P             previous unread
+ ^P            previous unread with same subject
+ d             delete current email (move to Trash)
+ D             delete entire thread
+ m             mark as read
+ M             mark entire thread as read
+ O             set selector order
+ R             reverse selector order
+ t             threaded view
+ u             unthreaded view
+ +             expand selected thread
+ -             unexpand selected thread
+ ^R            refresh view - re-read mailbox (can take a while)
+ q             commit changes, return to mailbox selection
+ x             return without saving changes
+ /             search, see below
+
 Flags:
 
+ *      flagged important
  N      new message
  U      unread message
  D      marked for deletion
+ A      answered
+ F      forwarded
 
-More commands:
+Search:
 
- N      next unread
- ^N     next unread with same subject
- P      previous unread
- ^P     previous unread with same subject
- d      delete current email (move to Trash)
- D      delete entire thread
- m      mark as read
- M      mark entire thread as read
- O      set selector order
- R      reverse selector order
- t      threaded view
- u      unthreaded view
- +      expand selected thread
- -      unexpand selected thread
- ^R     refresh view - re-read mailbox (can take a while)
- q      exit, return to mailbox selection
- x      exit without saving changes
+ /regex/[modifiers][:cmd:cmd…]        search for messages matching regex
 
- /regex/[modifiers][:cmds]        search for messages matching regex
-
-    modifiers:
+    modifiers; zero or more of:
         s       search Subject line (default)
         f       search From line
         t       search To line
+        h       search all headers (potentially slow)
         b       search entire body (potentially very slow)
 
-    search commands: any of d,D,m,M.
+    search commands: zero or more of :d,:D,:m,:M.
     With no commands, switches to a view of only matching articles.
     Use "/<cr>" to clear the filter and view everything again."""
 
@@ -563,14 +565,14 @@ def MessageScreen(win, account, mbox):
             return ic
         if ic in (ord('x'), ESC):
             return ic
-        if ic == ord('?'):
+        if ic in (ord('?'), curses.KEY_F1):
             HelpScreen(win, MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM)
             optScreen = MessageScreenSetup(win, account, mbox, messages)
             optScreen.display()
             continue
         # TODO: N,P,d,D,m,M,O,R,t,u
         if optScreen.commonKeys(ic):
-            optScreen.setBottomPrompt("Select account. %d/%d, ? for help: " % \
+            optScreen.setBottomPrompt("Select message. %d/%d, ? for help: " % \
                 (optScreen.getCurrent()+1, len(messages)))
             optScreen.refresh()
             continue
@@ -585,7 +587,10 @@ def MessageScreen(win, account, mbox):
         # TODO: detect changes
 
 def MessageScreenSetup(win, account, mbox, messages):
-    optScreen = MessageOptionScreen(win, messages, "Select message",
+    topPrompt = u"%s   %d messages" % (mbox.name, len(messages))
+    if mbox.nNew is not None: topPrompt += ", %d new" % mbox.nNew
+    if mbox.nUnread is not None: topPrompt += ", %d unread" % mbox.nUnread
+    optScreen = MessageOptionScreen(win, messages, topPrompt,
         "choose: ",
         "help",
         "NPdDmMORtu",
@@ -613,8 +618,8 @@ def MessageShowUpdate(win, mbox, count, final, pct, msg):
 class MessageOptionScreen(screens.ColumnOptionScreen):
     def resizeColumns(self, wid):
         def setCwids(wids):
-            self.cwidths = [(0,1)]
-            col = 2
+            self.cwidths = [(0,3)]
+            col = 4
             for wid in wids:
                 self.cwidths.append((col, wid))
                 col += wid + 2

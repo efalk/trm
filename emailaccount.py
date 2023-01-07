@@ -65,6 +65,8 @@ class mailbox(object):
         self.path = path
         self.messages = None
         self.msgdict = None
+        self.nUnread = None
+        self.nNew = None
     def getName(self):
         return self.name
     def __str__(self):
@@ -153,6 +155,15 @@ class messageSummary(object):
     sizewid = 6
     width = 8 + subjwid + fromwid + datewid + sizewid
     sentbox = False
+    FLAG_DELETED = 1
+    FLAG_NEW = 2
+    FLAG_READ = 4
+    FLAG_ANSWERED = 8
+    FLAG_FORWARDED = 0x10
+    FLAG_DIRECT = 0x20
+    FLAG_CC = 0x40
+    FLAG_SELECTED = 0x80
+    FLAG_FLAGGED = 0x100
     def __init__(self):
         self.offset = 0
         self.size = 0
@@ -160,22 +171,24 @@ class messageSummary(object):
         self.To = None
         self.Subject = None
         self.Date = None
-        self.Status = None
-        self.XStatus = None
+        self.status = 0
         self.MessageId = None
         self.uid = None
         self.key = None
     def __repr__(self):
         return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):
-        status = None
-        if self.Status is not None:
-            if 'R' not in self.Status: status = 'U'
-            elif 'O' not in self.Status: status = 'N'
-        if not status and self.XStatus:
-            if 'D' in self.XStatus: status = 'D'
-        if not status:
-            status = ' '
+        # Fit the status into three letters
+        status = self.status
+        c1 = '*' if status & self.FLAG_FLAGGED else ' '
+        c2 = 'D' if status & self.FLAG_DELETED else \
+             'U' if not (status & self.FLAG_READ) else \
+             'A' if status & self.FLAG_ANSWERED else \
+             'F' if status & self.FLAG_FORWARDED else \
+             'N' if status & self.FLAG_NEW else ' '
+        c3 = '+' if status & self.FLAG_DIRECT else \
+             '-' if status & self.FLAG_CC else ' '
+        status = c1+c2+c3
         return (status, self.Subject, self.From, self.Date,
             human_readable(self.size))
 

@@ -64,7 +64,6 @@ class ContentScreen(object):
     displayContent() for this to be useful. Set status=None
     to disable status line, else use e.g. "" for empty status"""
     def __init__(self, win, prompt1, prompt2, content, status, helpText):
-        writeLog("New ContentScreen")
         self.win = win
         self.content = content
         self.contentLen = 100   # subclass must fix this up
@@ -120,16 +119,16 @@ class ContentScreen(object):
         if self.status:
             win.addstr(self.statusY,0, self.status)
 
-        win.addstr(self.prompt2Y,0, self.prompt2)
+        win.addstr(self.prompt2Y,0, toUtf(self.prompt2))
         self.curspos = curses.getsyx()
         win.refresh()
         return self
 
     def displayContent(self, line0=0, line1=None):
         """Display the content. This method must be overridden to be
-        useful. Write out [line0 line1)."""
+        useful. Write out line0-line1 inclusive. Lines numbered from 0"""
         if line1 is None:
-            line1 = self.contentHgt
+            line1 = self.contentHgt - 1
         self.subwin.border()
         self.subwin.addstr(1,1, "Add content [%d %d) offset %d" % (line0, line1, self.offset))
         self.subwin.refresh()
@@ -180,12 +179,12 @@ class ContentScreen(object):
             # scroll down
             subwin.scroll(delta)
             self.offset = i
-            self.displayContent(0, -delta)
+            self.displayContent(0, -delta-1)
         elif i > offset and i < offset+SCROLL_THRESH:
             # scroll up
             subwin.scroll(delta)
             self.offset = i
-            self.displayContent(self.contentHgt - delta, self.contentHgt)
+            self.displayContent(self.contentHgt - delta, self.contentHgt-1)
         else:
             # Beyond that, complete refresh
             self.offset = i
@@ -255,7 +254,7 @@ class ContentScreen(object):
             writeLog("Received key %d" % c)
             if self.commonKeys(c):
                 continue
-            elif c in (ord('q'), ESC):
+            elif c in (ord('q'), ord('x'), ESC):
                 return c
     def displayAndWait(self):
         self.display()
@@ -289,11 +288,13 @@ class PagerScreen(ContentScreen):
     def displayContent(self, line0=0, line1=None):
         """Display the text subwindow"""
         if line1 is None:
-            line1 = self.contentHgt
+            line1 = self.contentHgt-1
+        elif line1 < line0:
+            line0,line1 = line1,line0
         offset = self.offset
         subwin = self.subwin
 
-        for i in xrange(line0, line1):
+        for i in xrange(line0, line1+1):
             if i+offset >= self.contentLen:
                 break
             subwin.addstr(i,0, toUtf(self.formatted[offset+i]))
@@ -350,7 +351,9 @@ class OptionScreen(ContentScreen):
     def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
         if line1 is None:
-            line1 = self.contentHgt
+            line1 = self.contentHgt - 1
+        elif line1 < line0:
+            line0,line1 = line1,line0
         subwin = self.subwin
         options = self.content
         offset = self.offset
@@ -359,14 +362,16 @@ class OptionScreen(ContentScreen):
         wid = self.wid
 
         #writeLog("options: " + str(options))
-        for i in xrange(line0, line1):
-            if i+offset >= self.contentLen or i >= len(optKeys):
-                break
+        # Upper limit is the least of line1, options, maxopts
+        limit = min(line1+1, self.maxopts, self.contentLen - offset)
+        for i in xrange(line0, limit):
+            if i+offset == self.current:
+                subwin.attrset(curses.A_BOLD)
+            subwin.addstr(i,0, '>' if i+offset == current else ' ')
             subwin.addstr(i,1, optKeys[i])
-            writeLog("i=%d, i+offset=%d, len(options)=%d" % (i, i+offset, len(options)))
             subwin.addstr(i,3, toUtf(str(options[i+offset])[:wid-4]))
             if i+offset == current:
-                subwin.addstr(i,0, '>')
+                subwin.attrset(curses.A_NORMAL)
         subwin.refresh()
         return self
 
@@ -386,21 +391,19 @@ class OptionScreen(ContentScreen):
 
     def moveTo(self, i):
         """Adjust index to the given value, scrolling if needed.
-        Returns True if index changed, False otherwise (because already
-        at the end of the range.)"""
-        if i < 0 or i >= self.contentLen:
-            return False
+        Returns True if index changed, False otherwise."""
+        if i < 0: i = 0
+        elif i >= self.contentLen: i = self.contentLen - 1
+        if i == self.current: return False
         subwin = self.subwin
         current = self.current
         offset = self.offset
         delta = i - offset      # new position, relative to top of screen
         if delta >= 0 and delta < self.maxopts:
-            # just move the caret
-            writeLog("just move")
-            subwin.addstr(current-offset, 0, ' ')
-            subwin.addstr(i-offset, 0, '>')
-            subwin.refresh()
+            old = self.current
             self.current = i
+            self.displayContent(i-offset, old-offset)
+            subwin.refresh()
             return True
         elif delta < 0:
             # No point in scrolling since the option letters have to be
@@ -425,6 +428,7 @@ class OptionScreen(ContentScreen):
         self.offset -= self.maxopts - 1
         if self.offset < 0: self.offset = 0
         self.current = self.offset
+        self.subwin.clear()
         self.displayContent()
         return True
 
@@ -435,6 +439,7 @@ class OptionScreen(ContentScreen):
             return False
         self.offset = offset
         self.current = offset
+        self.subwin.clear()
         self.displayContent()
         return True
 
@@ -510,23 +515,27 @@ class ColumnOptionScreen(OptionScreen):
         self.cwidths = [(0,wid/2), (wid/2,wid/2)]
         return self
 
-    def displayContent(self):
+    def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
-        win = self.win
+        if line1 is None:
+            line1 = self.contentHgt - 1
+        elif line1 < line0:
+            line0,line1 = line1,line0
         subwin = self.subwin
         options = self.content
         offset = self.offset
         current = self.current
         optKeys = self.optKeys
-        hgt, wid = win.getmaxyx()
+        wid = self.wid
+        cwidths = self.cwidths
 
-        subwin.clear()
-
-        n = min(self.maxopts, len(options) - offset)
-        for i in range(n):
+        n = min(line1+1, self.maxopts, self.contentLen - offset)
+        for i in xrange(line0, n):
+            if i+offset == self.current:
+                subwin.attrset(curses.A_BOLD)
+            subwin.addstr(i,0, '>' if i+offset == current else ' ')
             subwin.addstr(i,1, optKeys[i])
             values = options[i+offset].getValues()
-            cwidths = self.cwidths
             maxc = len(cwidths)
             subwin.move(i, 3)
             subwin.clrtoeol()
@@ -534,7 +543,7 @@ class ColumnOptionScreen(OptionScreen):
                 if j < maxc and cwidths[j][1] > 0 and s:
                     subwin.addstr(i,3+cwidths[j][0], toUtf(s[:cwidths[j][1]]))
             if i+offset == current:
-                subwin.addstr(i,0, '>')
+                subwin.attrset(curses.A_NORMAL)
 
         subwin.refresh()
         return self
