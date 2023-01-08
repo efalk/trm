@@ -96,8 +96,8 @@ class ContentScreen(object):
         # regions except below status.
         # promptY = 0
         self.contentY = 2
-        self.helpY = y = self.hgt - len(self.shortHelp) + 1
-        writeLog("helpY = %d" % self.helpY)
+        self.helpY = y = self.hgt - len(self.shortHelp[0])
+        writeLog("resize: hgt=%d, len=%d, Y=%d" % (self.hgt, len(self.shortHelp[0]), self.helpY))
         if self.status is not None:
             self.statusY = y-1
             y -= 3
@@ -151,6 +151,8 @@ class ContentScreen(object):
         pad = max((wid - cwid) // len(cwids), 2)
         x = 0
         win = self.win
+        if self.busy:
+            win.attrset(curses.A_DIM)
         for i,col in enumerate(shortHelp):
             cw = cwids[i]
             if x + cw >= wid:
@@ -160,6 +162,13 @@ class ContentScreen(object):
                 win.addstr(y,x, s)
                 y += 1
             x += cw + pad
+        if self.busy:
+            win.attrset(curses.A_NORMAL)
+
+    def setBusy(self, busy):
+        """Toggle busy flag. Caller should call refresh()."""
+        self.busy = busy
+        self.displayShortHelp()
 
     def refresh(self):
         """Tell curses to bring screen up to date."""
@@ -188,10 +197,10 @@ class ContentScreen(object):
         self.displayShortHelp()
         return self
 
-    def setStatus(self, prompt):
+    def setStatus(self, status):
         """Replace status. Caller should call refresh() after."""
         self.status = status
-        self.win.addstr(self.statusY,0, prompt)
+        self.win.addstr(self.statusY,0, status)
         return self
 
     def getOffset(self): return self.offset
@@ -399,7 +408,7 @@ class OptionScreen(ContentScreen):
         if self.current >= self.contentLen:
             self.current = self.contentLen - 1
         self.displayContent()
-        subwin.refresh()
+        self.subwin.refresh()
         return self
 
     def getCurrent(self): return self.current

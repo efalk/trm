@@ -9,6 +9,8 @@ PY3 = sys.version_info[0] >= 3
 if PY3:
     basestring = str
     import configparser
+    # In Python3, curses takes unicode natively, so no
+    # need to encode.
     def fromUtf(s):
         return s
     def toUtf(s):

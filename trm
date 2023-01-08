@@ -248,8 +248,6 @@ def AccountScreen(win, accounts):
             optScreen.display()
             continue
         if optScreen.commonKeys(ic):
-            #pct = percent(optScreen.getCurrent(), len(opts))
-            #optScreen.setTopPrompt("Select account %d%%, F1 or ? for help: " % pct)
             optScreen.setTopPrompt("Select account. %d/%d, F1 or ? for help: " % \
                 (optScreen.getCurrent()+1, len(opts)))
             optScreen.refresh()
@@ -551,22 +549,28 @@ Search:
     With no commands, switches to a view of only matching articles.
     Use "/<cr>" to clear the filter and view everything again."""
 
-msgScreenStatusShown = False
+messageStart = False
 
 def MessageScreen(win, account, mbox):
-    """Prompt user to select a message. When the user selects
-    one, go to DisplayScreen().  If user selects 'x' or 'q', this function
+    """Prompt user to select a message. When the user selects one,
+    go to DisplayScreen().  If user selects 'x' or 'q', this function
     returns."""
-    global msgScreenStatusShown
+    global messageStart
 
-    msgScreenStatusShown = False
-
-    nmsg = mbox.getOverview(lambda mbox,count,final,pct,msg: \
-        MessageShowUpdate(win, mbox, count, final, pct, msg))
-    messages = mbox.summaries()
-
-    optScreen = MessageScreenSetup(win, account, mbox, messages)
+    optScreen = MessageScreenSetup(win, account, mbox, [])
+    optScreen.setBusy(True)
     optScreen.display()
+
+    messageStart = False
+    nmsg = mbox.getOverview(lambda mbox,count,final,pct,msg: \
+        MessageShowUpdate(optScreen, mbox, count, final, pct, msg))
+    messages = mbox.summaries()
+    MessageScreenPrompt(optScreen, mbox)
+    optScreen.setContent(messages)
+    optScreen.setBusy(False)
+    optScreen.refresh()
+
+
     writeLog("About to enter MessageScreen main loop")
     while True:
         ic = win.getch()
@@ -583,7 +587,7 @@ def MessageScreen(win, account, mbox):
             continue
         # TODO: N,P,d,D,m,M,O,R,t,u
         if optScreen.commonKeys(ic):
-            MessageScreenPrompt(win, optScreen, mbox, messages)
+            MessageScreenPrompt(optScreen, mbox)
             optScreen.refresh()
             continue
         idx = optScreen.isOptionKey(ic)
@@ -603,30 +607,26 @@ def MessageScreenSetup(win, account, mbox, messages):
             ("+ Add", "- Remove"), ("E Edit",)),
         "NPdDmMuUORt")
     optScreen.resize()
-    MessageScreenPrompt(win, optScreen, mbox, messages)
+    MessageScreenPrompt(optScreen, mbox)
     return optScreen
 
-def MessageScreenPrompt(win, optScreen, mbox, messages):
-    topPrompt = u"%s   %d messages" % (mbox.name, len(messages))
+def MessageScreenPrompt(optScreen, mbox, comment=None):
+    topPrompt = u"%s   %d messages" % (mbox.getName(), mbox.nmessages())
     if mbox.nNew is not None: topPrompt += ", %d new" % mbox.nNew
     if mbox.nUnread is not None: topPrompt += ", %d unread" % mbox.nUnread
-    topPrompt += ": %d/%d, F1 or ? for help: " % (optScreen.getCurrent()+1, len(messages))
+    topPrompt += ": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages())
+    topPrompt += comment if comment else "F1 or ? for help: "
     optScreen.setTopPrompt(topPrompt)
 
-def MessageShowUpdate(win, mbox, count, final, pct, msg):
+def MessageShowUpdate(optScreen, mbox, count, final, pct, msg):
     # If this is called with final=False, then it's a good bet that
     # we're going to be here for a while, so time to start showing status
-    global msgScreenStatusShown
-    if not final and not msgScreenStatusShown:
-        win.erase()
-        win.addstr(1,1, "Reading mailbox \"%s\", ^C to interrupt" % mbox.getName())
-        msgScreenStatusShown = True
-    win.addstr(2,1, "%d, %d%%" % (count, pct))
-    win.clrtoeol()
-    if msg:
-        win.addstr(3,1, msg)
-        win.clrtoeol()
-    win.refresh()
+    global messageStart
+    if not final:
+        if not messageStart:
+            optScreen.setContent(mbox.summaries())
+        MessageScreenPrompt(optScreen, mbox, "%d%%. ^C to interrupt" % pct)
+        optScreen.refresh()
 
 class MessageOptionScreen(screens.ColumnOptionScreen):
     def resizeColumns(self, wid):

@@ -75,7 +75,7 @@ class mailbox(object):
         return "<mailbox %s>" % self.name
     def nmessages(self):
         """Return # of messages in this mailbox, or None if not known."""
-        return None if self.messages == None else len(self.messages)
+        return 0 if self.messages == None else len(self.messages)
     def summaries(self):
         """Return array of message summaries."""
         return self.messages

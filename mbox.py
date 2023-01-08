@@ -1,8 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf8 -*-
 
-from __future__ import print_function
-
 import os
 import socket
 import sys
@@ -96,7 +94,10 @@ class Mbox(mailbox):
         lastOffset = 0  # Offset of last seen "From " line.
         self.nUnread = 0
         self.nNew = 0
-        with open(self.path, "r") as ifile:
+        # Programming note: I originally did "with open(...) as ifile",
+        # but it resulted in "'I/O operation on closed file' in  ignored"
+        try:
+            ifile = open(self.path, "r")
             flock = dotlock.FileLock(ifile)
             dlock = dotlock.DotLock(self.path)
             if not self.lockboxes(flock, dlock):
@@ -131,9 +132,11 @@ class Mbox(mailbox):
                     if callback:
                         callback(self, msgcount, True, 100.*offset/self.size,
                                             "Interrupted by user")
-                        return msgcount
+                        break
 
+        finally:
             self.unlockboxes(flock, dlock)
+            ifile.close()
 
         if callback:
             callback(self, msgcount,True, 100., None)
