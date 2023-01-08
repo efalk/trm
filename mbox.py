@@ -169,7 +169,7 @@ class Mbox(mailbox):
             if 'A' in status: msg.status |= messageSummary.FLAG_ANSWERED
             if 'F' in status: msg.status |= messageSummary.FLAG_FLAGGED
             if 'D' in status: msg.status |= messageSummary.FLAG_DELETED
-        if "X-UID" in fullhdrs: msg.Uid = fullhdrs["X-UID"]
+        if "X-UID" in fullhdrs: msg.uid = fullhdrs["X-UID"]
         if "Message-Id" in fullhdrs: msg.MessageId = fullhdrs["Message-Id"]
         elif "Message-ID" in fullhdrs: msg.MessageId = fullhdrs["Message-ID"]
         if msg.uid: msg.key = msg.uid

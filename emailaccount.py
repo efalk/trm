@@ -207,7 +207,7 @@ if PY3:
                     rval.append(part[0].decode(part[1]))
                 except:
                     rval.append(u"???")
-        return u''.join(rval)
+        return u''.join(rval).replace(u"\n",u"").replace(u"\r",u"")
 
 else:
     iso_re = re.compile(r"""(=\?.+?\?.+?\?.+?\?=)""")
@@ -230,4 +230,4 @@ else:
                             rval.append(part2[0].decode(part2[1]))
                         except:
                             rval.append(u"???")
-        return u''.join(rval)
+        return u''.join(rval).replace(u"\n",u"").replace(u"\r",u"")
