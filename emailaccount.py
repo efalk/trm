@@ -95,11 +95,11 @@ class mailbox(object):
     def getHeaders(self, n):
         """Return full headers from this message. Indexing starts at 0.
         May return None for a non-available message."""
-        return {}
-    def getText(self, n):
-        """Return full text of this message as a dict divided into parts.
+        return None
+    def getMessage(self, n):
+        """Return full message as an email.message object.
         May return None for a non-available message."""
-        return {}
+        return None
 
     # Special mailboxes and their sort order
     specials = { 'inbox':0, 'drafts':1, 'sent':2, 'sent messages':3,
@@ -175,6 +175,7 @@ class messageSummary(object):
         self.MessageId = None
         self.uid = None
         self.key = None
+        self.idx = None         # Counting from 0
     def __repr__(self):
         return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):

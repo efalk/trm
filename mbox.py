@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf8 -*-
 
+import email.parser
 import os
 import socket
 import sys
@@ -8,6 +9,7 @@ import time
 
 from emailaccount import *
 import dotlock
+import filerange
 from utils import writeLog
 
 if sys.platform.startswith('linux'):
@@ -71,6 +73,7 @@ class Mbox(mailbox):
     def __init__(self, name, path):
         mailbox.__init__(self, name, path)
         self.size = os.path.getsize(path)
+        self.parser = email.parser.Parser()
 
     def getOverview(self, callback):
         """Get all of the Subject, From, To, and Date headers.
@@ -113,6 +116,7 @@ class Mbox(mailbox):
                         break
                     # We prefer X-UID as the dictionary key, else we'll use
                     # the message id.
+                    msg.idx = msgcount
                     key = msg.key
                     self.messages.append(msg)
                     self.msgdict[key] = msg
@@ -201,13 +205,23 @@ class Mbox(mailbox):
     def getHeaders(self, n):
         """Return full headers from this message. Indexing starts at 0.
         May return None for a non-available message."""
-        # TODO
-        return {}
-    def getText(self, n):
+        if n < 0 or n >= len(self.messages):
+            return None
+        # TODO: confirm the mailbox hasn't changed
+        msg = self.messages[n]
+        ifile = open(self.path, "r")
+        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
+        return self.parser.parse(ifile, True)
+    def getMessage(self, n):
         """Return full text of this message as a dict divided into parts.
         May return None for a non-available message."""
-        # TODO
-        return {}
+        if n < 0 or n >= len(self.messages):
+            return None
+        # TODO: confirm the mailbox hasn't changed
+        msg = self.messages[n]
+        ifile = open(self.path, "r")
+        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
+        return self.parser.parse(ifile)
 
     def lockboxes(self, filelock, dotlock):
         """Acquire both locks. Return False on failure."""
