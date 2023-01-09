@@ -499,6 +499,9 @@ class ImapMboxScreen(MailboxScreen):
 
 MESSAGE_HELP_TOP = u"""Select the message to read."""
 MESSAGE_HELP_BOTTOM = u"""
+ q             commit changes, return to mailbox selection
+ x             return without saving changes
+
  N             next unread
  ^N            next unread with same subject
  P             previous unread
@@ -515,8 +518,6 @@ MESSAGE_HELP_BOTTOM = u"""
  +             expand selected thread (TODO)
  -             unexpand selected thread (TODO)
  ^R            refresh view - re-read mailbox (can take a while)
- q             commit changes, return to mailbox selection
- x             return without saving changes
  /             search, see below
 
 Flags:
@@ -570,12 +571,14 @@ def MessageScreen(win, account, mbox):
     optScreen.setBusy(False)
     optScreen.refresh()
 
+    direction = 1       # where do we go after a delete
 
     writeLog("About to enter MessageScreen main loop")
     while True:
         ic = win.getch()
         writeLog("Received character %d" % ic)
-        if ic == ord('q'):
+        c = chr(ic) if ic < 128 else '\0'
+        if c == 'q':
             writeLog("TODO: write out changes")
             return ic
         if ic in (ord('x'), ESC):
@@ -585,8 +588,22 @@ def MessageScreen(win, account, mbox):
             optScreen = MessageScreenSetup(win, account, mbox, messages)
             optScreen.display()
             continue
-        # TODO: N,P,d,D,m,M,O,R,t,u
+        if c == 'N':
+            idx = mbox.nextUnread(optScreen.getCurrent())
+            if idx is not None:
+                optScreen.moveTo(idx)
+            direction = 1
+            continue
+        if c == 'P':
+            idx = mbox.previousUnread(optScreen.getCurrent())
+            if idx is not None:
+                optScreen.moveTo(idx)
+            direction = -1
+            continue
+        # TODO: d,D,m,M,O,R,t,u
         if optScreen.commonKeys(ic):
+            if c == 'n': direction = 1
+            if c == 'p': direction = -1
             MessageScreenPrompt(optScreen, mbox)
             optScreen.refresh()
             continue
@@ -594,7 +611,31 @@ def MessageScreen(win, account, mbox):
         if idx >= 0:
             writeLog("Chose option %d" % idx)
             optScreen = None
+            newIdx = idx
+            while idx is not None:
+                # Launch email viewer
+                ic = EmailScreen(win, account, mbox, idx)
+                c = chr(ic) if ic < 128 else '\0'
+                if c == 'n':
+                    idx = mbox.nextMessage(idx)
+                    direction = 1
+                elif c == 'p':
+                    idx = mbox.previousMessage(idx)
+                    direction = -1
+                elif c == 'N':
+                    idx = mbox.nextUnread(idx)
+                    direction = 1
+                elif c == 'P':
+                    idx = mbox.previousUnread(idx)
+                    direction = -1
+                else:
+                    idx = None
+                if idx is not None: newIdx = idx
+                writeLog("New idx = %s" % idx)
+            idx = newIdx
             optScreen = MessageScreenSetup(win, account, mbox, messages)
+            optScreen.resize().setCurrent(idx)
+            MessageScreenPrompt(optScreen, mbox)
             optScreen.display()
             continue
         writeLog("Ignoring key code %d" % ic)
@@ -603,20 +644,21 @@ def MessageScreen(win, account, mbox):
 def MessageScreenSetup(win, account, mbox, messages):
     optScreen = MessageOptionScreen(win, messages, mbox.name,
         (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
+            ("N Next Unread", "P Prev Unread"),
             ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
-            ("+ Add", "- Remove"), ("E Edit",)),
+            ("d Delete", ""), ("q Return", "x Abort")),
         "NPdDmMuUORt")
     optScreen.resize()
     MessageScreenPrompt(optScreen, mbox)
     return optScreen
 
 def MessageScreenPrompt(optScreen, mbox, comment=None):
-    topPrompt = u"%s   %d messages" % (mbox.getName(), mbox.nmessages())
-    if mbox.nNew is not None: topPrompt += ", %d new" % mbox.nNew
-    if mbox.nUnread is not None: topPrompt += ", %d unread" % mbox.nUnread
-    topPrompt += ": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages())
-    topPrompt += comment if comment else "F1 or ? for help: "
-    optScreen.setTopPrompt(topPrompt)
+    topPrompt = ["%s   %d messages" % (mbox.getName(), mbox.nmessages())]
+    if mbox.nNew is not None: topPrompt.append(", %d new" % mbox.nNew)
+    if mbox.nUnread is not None: topPrompt.append(", %d unread" % mbox.nUnread)
+    topPrompt.append(": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages()))
+    topPrompt.append(comment if comment else "F1 or ? for help: ")
+    optScreen.setTopPrompt("".join(topPrompt))
 
 def MessageShowUpdate(optScreen, mbox, count, final, pct, msg):
     # If this is called with final=False, then it's a good bet that
@@ -656,6 +698,128 @@ class MessageOptionScreen(screens.ColumnOptionScreen):
             subjwid = int(wid * 0.6)
             fromwid = wid - subjwid
             setCwids((subjwid, fromwid))
+
+
+#       Message Viewer
+
+EMAIL_HELP = u"""
+Email message viewer:
+
+ F1 ?          this text
+ ↓ j           down one line
+ ↑ k           up one line
+ PGDN > ^F SP  next page
+ PGUP < ^B     previous page
+ HOME ^        top
+ END  $        end
+ ^L            refresh screen
+ ^C            exit trm
+ q ESC         return to previous screen
+ x             return to previous screen without saving changes
+
+ H             toggle full header view
+
+ n             next message
+ p             previous message
+ N             next unread
+ ^N            next unread with same subject
+ P             previous unread
+ ^P            previous unread with same subject
+
+ d             delete current email (move to Trash)
+ D             delete entire thread
+ m             mark as read
+ M             mark entire thread as read
+ u             mark as unread
+ U             mark entire thread as unread"""
+
+def EmailScreen(win, account, mbox, idx):
+    """Display the selected message."""
+
+    msg = mbox.getMessage(idx)
+    # TODO: handle not found
+    # If multipart, search for a text/plain part
+    longHeaders = False
+    if msg.is_multipart():
+        charset = None
+        text = None
+        html = None
+        for part in msg.walk():
+            if part.is_multipart():
+                continue
+            if part.get_param("text/html") is not None:
+                # We can use html if plain is not found
+                charset = part.get_param("charset")
+                text = part.get_payload(decode=True)
+            if part.get_param("text/plain") is not None:
+                # Found it
+                charset = part.get_param("charset")
+                text = part.get_payload(decode=True)
+                break
+    else:
+        charset = msg.get_param("charset")
+        text = msg.get_payload(decode=True)
+
+    if not text: text = html
+    if not text: text = u"No plain text found for this message"
+    if charset:
+        try:
+            text = text.decode(charset, errors="replace")
+        except LookupError:
+            pass
+
+    optScreen = EmailScreenSetup(win, account, mbox, idx, msg, text, longHeaders)
+    optScreen.display()
+
+    writeLog("About to enter EmailScreen main loop")
+    while True:
+        ic = win.getch()
+        c = chr(ic) if ic < 128 else '\0'
+        writeLog("Received character %d" % ic)
+        if c == 'q':
+            writeLog("TODO: write out changes")
+            return ic
+        if ic in (ord('x'), ESC):
+            return ic
+        if ic in (ord('?'), curses.KEY_F1):
+            HelpScreen(win, EMAIL_HELP)
+            optScreen = EmailScreenSetup(win, account, mbox, idx, msg, text, longHeaders)
+            optScreen.display()
+            continue
+        if c == 'H':
+            longHeaders = not longHeaders
+            optScreen.setContent(EmailContent(msg, text, longHeaders)).refresh()
+        if c in "npNPdD":
+            return ic
+        # TODO: m,M,O,R,t,u
+        if optScreen.commonKeys(ic):
+            optScreen.refresh()
+            continue
+        writeLog("Ignoring key code %d" % ic)
+        # TODO: detect changes
+
+def EmailScreenSetup(win, account, mbox, idx, msg, text, longHeaders):
+    optScreen = screens.PagerScreen(win, EmailContent(msg, text, longHeaders),
+        "Message %d/%d" % (idx+1, mbox.nmessages()),
+        (("? Help","d Delete"), ("↑ Up one", "↓ Down one"),
+            ("PGUP < Page up", "PGDN > Page down"),
+            ("HOME ^ Top", "END  $ Bottom"),
+            ("n Next msg", "p Prev msg"), ("N Next unread", "P Prev unread"),
+            ("q Return", "x Abort")))
+    optScreen.resize().display()
+    return optScreen
+
+def EmailContent(msg, text, longHeaders):
+    headers = []
+    if not longHeaders:
+        if "From" in msg: headers.append(u"From: " + unicode(msg["From"]))
+        if "Subject" in msg: headers.append(u"Subject: " + unicode(msg["Subject"]))
+        if "To" in msg: headers.append(u"To: " + unicode(msg["To"]))
+        if "Date" in msg: headers.append(u"Date: " + unicode(msg["Date"]))
+    else:
+        for hdr in msg.keys():
+            headers.append(unicode(hdr) + ": " + unicode(msg[hdr]))
+    return u"\n".join(headers) + u'\n\n' + text
 
 
 #       UTILITIES

@@ -95,7 +95,7 @@ class ContentScreen(object):
         # two lines, but we don't enforce that. One blank line between
         # regions except below status.
         # promptY = 0
-        self.contentY = 2
+        self.contentY = 2 if self.prompt else 0
         self.helpY = y = self.hgt - len(self.shortHelp[0])
         writeLog("resize: hgt=%d, len=%d, Y=%d" % (self.hgt, len(self.shortHelp[0]), self.helpY))
         if self.status is not None:
@@ -343,9 +343,10 @@ class PagerScreen(ContentScreen):
     def setContent(self, text):
         """Replace text. Caller should call refresh() after."""
         self.content = text
-        __reformat(self)
+        self.__reformat()
         if self.offset >= self.contentLen:
             self.offset = self.contentLen - 2
+        self.subwin.clear()
         self.displayContent()
         return self
 
@@ -409,6 +410,20 @@ class OptionScreen(ContentScreen):
             self.current = self.contentLen - 1
         self.displayContent()
         self.subwin.refresh()
+        return self
+
+    def setCurrent(self, i):
+        """Set current item. Caller should call displayContent() and refresh().
+        Consider calling moveTo() instead."""
+        writeLog("setCurrent(%d), current=%d, offset=%d" % (i, self.current, self.offset))
+        if i < 0: i = 0
+        elif i >= self.contentLen: i = self.contentLen - 1
+        self.current = i
+        if i < self.offset:
+            self.offset = i
+        elif i >= self.offset + self.maxopts:
+            self.offset = max(0, i - self.maxopts + 2)
+        writeLog("  done, current=%d, offset=%d" % (self.current, self.offset))
         return self
 
     def getCurrent(self): return self.current

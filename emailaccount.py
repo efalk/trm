@@ -100,6 +100,26 @@ class mailbox(object):
         """Return full message as an email.message object.
         May return None for a non-available message."""
         return None
+    def nextMessage(self, n):
+        """Return index of next message after this, or None."""
+        return None if not self.messages or n >= len(self.messages)-1 else n+1
+    def previousMessage(self, n):
+        """Return index of previous message before this, or None."""
+        return None if not self.messages or n <= 0 else n-1
+    def nextUnread(self, n):
+        """Return index of next unread message after this, or None."""
+        if not self.messages: return None
+        for i in range(n+1, len(self.messages)):
+            if not self.messages[i].status & messageSummary.FLAG_READ:
+                return i
+        return None
+    def previousUnread(self, n):
+        """Return index of previous unread message before this, or None."""
+        if not self.messages: return None
+        for i in range(n-1, -1, -1):
+            if not self.messages[i].status & messageSummary.FLAG_READ:
+                return i
+        return None
 
     # Special mailboxes and their sort order
     specials = { 'inbox':0, 'drafts':1, 'sent':2, 'sent messages':3,
