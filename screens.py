@@ -152,7 +152,7 @@ class ContentScreen(object):
         x = 0
         win = self.win
         if self.busy:
-            win.attrset(curses.A_DIM)
+            win.attrset(curses.A_INVIS)
         for i,col in enumerate(shortHelp):
             cw = cwids[i]
             if x + cw >= wid:
@@ -375,6 +375,7 @@ class OptionScreen(ContentScreen):
 
     def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
+        if self.contentLen <= 0: return self
         if line1 is None:
             line1 = self.contentHgt - 1
         elif line1 < line0:
@@ -535,6 +536,125 @@ class OptionScreen(ContentScreen):
         return idx
 
 
+class ActiveOptionScreen(OptionScreen):
+    """Like OptionScreen, but each object in the options list must
+    support the active() method which returns False if the item is
+    not currently selectable."""
+
+    def displayContent(self, line0=0, line1=None):
+        """Display the options subwindow"""
+        if self.contentLen <= 0: return self
+        if line1 is None:
+            line1 = self.contentHgt - 1
+        elif line1 < line0:
+            line0,line1 = line1,line0
+        subwin = self.subwin
+        options = self.content
+        offset = self.offset
+        current = self.current
+        optKeys = self.optKeys
+        wid = self.wid
+
+        #writeLog("options: " + str(options))
+        # Upper limit is the least of line1, options, maxopts
+        limit = min(line1+1, self.maxopts, self.contentLen - offset)
+        for i in xrange(line0, limit):
+            option = options[i+offset]
+            if option.active():
+                subwin.addstr(i,0, '>' if i+offset == current else ' ')
+                subwin.addstr(i,1, optKeys[i])
+                subwin.attrset(curses.A_DIM)
+            elif i+offset == self.current:
+                subwin.attrset(curses.A_BOLD)
+            subwin.addstr(i,3, toUtf(str(option)[:wid-4]))
+            if not option.active() or i+offset == current:
+                subwin.attrset(curses.A_NORMAL)
+        subwin.refresh()
+        return self
+
+    def prevActive(self, i):
+        """Return index of previous active object starting at i. If none,
+        returns i."""
+        if i <= 0: return 0
+        for j in range(i,0,-1):
+            if self.content[j].active():
+                return j
+        return i
+
+    def nextActive(self, i):
+        """Return index of next active object starting at i. If none,
+        returns i."""
+        n = len(self.content)
+        if i >= n-1: return n-1
+        for j in range(i,n-1):
+            if self.content[j].active():
+                return j
+        return i
+
+    def pageUp(self):
+        if self.offset <= 0:
+            return False
+        self.offset -= self.maxopts - 1
+        if self.offset < 0: self.offset = 0
+        self.current = self.prevActive(self.offset)
+        self.offset = min(self.offset, self.current)
+        self.subwin.clear()
+        self.displayContent()
+        return True
+
+    def pageDown(self):
+        offset = self.offset
+        offset += self.maxopts - 1
+        if offset >= len(self.content):
+            return False
+        self.offset = offset
+        self.current = self.nextActive(offset)
+        self.offset = max(self.offset, self.current - self.maxopts + 1)
+        self.subwin.clear()
+        self.displayContent()
+        return True
+
+    def pageHome(self):
+        return self.moveTo(self.nextActive(0))
+
+    def pageEnd(self):
+        return self.moveTo(self.prevActive(len(self.content) - 1))
+
+    def commonKeys(self, c):
+        """Handle common keys that scroll up and down. Return
+        False if key was not handled by this method."""
+        if c in (ord('n'), ord(']'), CTRL_N, curses.KEY_DOWN):
+            self.moveTo(self.nextActive(self.current+1))
+            return True
+        if c in (ord('p'), ord('['), CTRL_P, curses.KEY_UP):
+            self.moveTo(self.prevActive(self.current-1))
+            return True
+        if c in (ord('>'), CTRL_F, curses.KEY_NPAGE, ord(' ')):
+            self.pageDown()
+            return True
+        if c in (ord('<'), CTRL_B, curses.KEY_PPAGE):
+            self.pageUp()
+            return True
+        if c in (ord('^'), curses.KEY_HOME):
+            self.pageHome()
+            return True
+        if c in (ord('$'), curses.KEY_END):
+            self.pageEnd()
+            return True
+        if c in (curses.KEY_RESIZE, CTRL_L):
+            writeLog("Executing resize")
+            self.resize()
+            self.display()
+            return True
+        return False    # didn't use this key
+
+    def isOptionKey(self, c):
+        """If this character was one of the optKeys, determine which
+        option it represented. Else return -1."""
+        idx = super(ActiveOptionScreen,self).isOptionKey(c)
+        return idx if idx >= 0 and self.content[idx].active() else -1
+
+
 class ColumnOptionScreen(OptionScreen):
     """Similar to OptionScreen, but displays multiple values in columns."""
     def __init__(self, win, options, prompt, shortHelp, cmds):
@@ -554,6 +674,7 @@ class ColumnOptionScreen(OptionScreen):
 
     def displayContent(self, line0=0, line1=None):
         """Display the options subwindow"""
+        if self.contentLen <= 0: return self
         if line1 is None:
             line1 = self.contentHgt - 1
         elif line1 < line0:

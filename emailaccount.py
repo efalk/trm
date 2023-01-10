@@ -60,6 +60,12 @@ class mailbox(object):
     NO_UPDATES = 0      # No change since last asked
     BOX_APPENDED = 1    # Email has been added to the end
     BOX_CHANGED = 2     # Mailbox changed and should be re-read
+    # Status values for getOverview callback
+    READ_IN_PROGRESS = 0        # load in progress
+    READ_FINISHED = 1           # load complete
+    READ_INTERRUPTED = 2        # interrupted by user
+    READ_LOCKED = 3             # unable to acquire lock
+
     def __init__(self, name, path):
         self.name = name
         self.path = path
@@ -69,6 +75,8 @@ class mailbox(object):
         self.nNew = None
     def getName(self):
         return self.name
+    def active(self):
+        return True
     def __str__(self):
         return self.name
     def __repr__(self):
@@ -83,9 +91,9 @@ class mailbox(object):
         """Get all of the Subject, From, To, and Date headers.
         Return the total # of messages.
         As this could conceivably take a lot of time, an optional
-        callback(mailbox, count, isFinal) is called once per second,
+        callback(mailbox, count, percent, status, msg) is called once per second,
         and at the conclusion."""
-        return 0
+        return mailbox.READ_FINISHED
     def checkForUpdates(self):
         """Return NO_UPDATES, BOX_APPENDED, or BOX_CHANGED."""
         return NO_UPDATES

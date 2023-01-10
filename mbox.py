@@ -74,6 +74,41 @@ class Mbox(mailbox):
         mailbox.__init__(self, name, path)
         self.size = os.path.getsize(path)
         self.parser = email.parser.Parser()
+        self.busy = False               # Unavailable if True
+        self.busy = name[1] is 'e'
+    def __str__(self):
+        return "%s (saving...)" % self.name if self.busy else self.name
+    def active(self):
+        return not self.busy
+    def checkForUpdates(self):
+        """Return True if the mailbox was updated by an external
+        force since the last update."""
+        # TODO
+        return False
+    def getAllHeaders(self):
+        """Return array of selected headers from all messages."""
+        # TODO
+        return []
+    def getHeaders(self, n):
+        """Return full headers from this message. Indexing starts at 0.
+        May return None for a non-available message."""
+        if n < 0 or n >= len(self.messages):
+            return None
+        # TODO: confirm the mailbox hasn't changed
+        msg = self.messages[n]
+        ifile = open(self.path, "r")
+        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
+        return self.parser.parse(ifile, True)
+    def getMessage(self, n):
+        """Return full text of this message as a dict divided into parts.
+        May return None for a non-available message."""
+        if n < 0 or n >= len(self.messages):
+            return None
+        # TODO: confirm the mailbox hasn't changed
+        msg = self.messages[n]
+        ifile = open(self.path, "r")
+        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
+        return self.parser.parse(ifile)
 
     def getOverview(self, callback):
         """Get all of the Subject, From, To, and Date headers.
@@ -105,9 +140,9 @@ class Mbox(mailbox):
             dlock = dotlock.DotLock(self.path)
             if not self.lockboxes(flock, dlock):
                 if callback:
-                    callback(self, msgcount, True, 0,
+                    callback(self, msgcount, 0, mailbox.READ_LOCKED,
                         "Failed to lock mailbox %, timed out" % self.path)
-                return msgcount
+                return mailbox.READ_LOCKED
 
             while True:
                 try:
@@ -128,23 +163,24 @@ class Mbox(mailbox):
                         if now > lastcb + 0.5:
                             lastcb = now
                             if callback:
-                                callback(self, msgcount,False, 100.*offset/self.size, None)
+                                callback(self, msgcount, 100.*offset/self.size,
+                                    mailbox.READ_IN_PROGRESS, None)
                             if now > lastrefresh + 5.0:
                                 lastrefresh = now
                                 dlock.refresh()
                 except KeyboardInterrupt:
                     if callback:
-                        callback(self, msgcount, True, 100.*offset/self.size,
-                                            "Interrupted by user")
-                        break
+                        callback(self, msgcount, 100.*offset/self.size,
+                            mailbox.READ_INTERRUPTED, "Interrupted by user")
+                        return mailbox.READ_INTERRUPTED
 
         finally:
             self.unlockboxes(flock, dlock)
             ifile.close()
 
         if callback:
-            callback(self, msgcount,True, 100., None)
-        return msgcount
+            callback(self, msgcount,100., mailbox.READ_FINISHED, None)
+        return mailbox.READ_FINISHED
 
     def getMessageSummary(self, ifile):
         """Scan for a "From " line, return its key headers."""
@@ -193,35 +229,6 @@ class Mbox(mailbox):
                 ifile.seek(offset)
                 return offset
 
-    def checkForUpdates(self):
-        """Return True if the mailbox was updated by an external
-        force since the last update."""
-        # TODO
-        return False
-    def getAllHeaders(self):
-        """Return array of selected headers from all messages."""
-        # TODO
-        return []
-    def getHeaders(self, n):
-        """Return full headers from this message. Indexing starts at 0.
-        May return None for a non-available message."""
-        if n < 0 or n >= len(self.messages):
-            return None
-        # TODO: confirm the mailbox hasn't changed
-        msg = self.messages[n]
-        ifile = open(self.path, "r")
-        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
-        return self.parser.parse(ifile, True)
-    def getMessage(self, n):
-        """Return full text of this message as a dict divided into parts.
-        May return None for a non-available message."""
-        if n < 0 or n >= len(self.messages):
-            return None
-        # TODO: confirm the mailbox hasn't changed
-        msg = self.messages[n]
-        ifile = open(self.path, "r")
-        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
-        return self.parser.parse(ifile)
 
     def lockboxes(self, filelock, dotlock):
         """Acquire both locks. Return False on failure."""

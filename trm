@@ -40,18 +40,23 @@ import screens
 import emailaccount
 import mbox
 import imap
+from emailaccount import parseIso
 from keycodes import *
 from utils import writeLog, loggingEnabled, configGet, configSet
 
 PY3 = sys.version_info[0] >= 3
 if PY3:
     import configparser
+    from html import unescape
     basestring = str
     raw_input = input
 else:
     import ConfigParser as configparser
     import locale
+    import HTMLParser
     locale.setlocale(locale.LC_ALL, '')
+    parser = HTMLParser.HTMLParser()
+    unescape = parser.unescape
 
 # Programming note: under Python2, curses knows nothing about unicode.
 # You must manually encode any unicode string before passing to curses.
@@ -334,7 +339,8 @@ More commands:
     def screenSetup(self):
         """Create appropriate OptionScreen object."""
 
-        self.optScreen = optScreen = screens.OptionScreen(self.win, self.mboxes, "Select mailbox",
+        self.optScreen = optScreen = screens.ActiveOptionScreen(self.win,
+            self.mboxes, "Select mailbox",
             (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
                 ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
                 ("+ Add", "- Remove")),
@@ -423,7 +429,7 @@ class ImapMboxScreen(MailboxScreen):
             "+ add mailbox", "- delete selected mailbox"]
 
         writeLog("Create new options screen, %d items" % len(self.mboxes))
-        self.optScreen = optScreen = screens.OptionScreen(self.win, self.mboxes,
+        self.optScreen = optScreen = screens.ActiveOptionScreen(self.win, self.mboxes,
             "Select mailbox",
             "choose: ",
             "help",
@@ -563,8 +569,13 @@ def MessageScreen(win, account, mbox):
     optScreen.display()
 
     messageStart = False
-    nmsg = mbox.getOverview(lambda mbox,count,final,pct,msg: \
+
+    # This step can take a long time for a very large mailbox.
+    # The lambda is called every half second or so with a status
+    # update. TODO: run this in a background thread.
+    status = mbox.getOverview(lambda mbox,count,final,pct,msg: \
         MessageShowUpdate(optScreen, mbox, count, final, pct, msg))
+
     messages = mbox.summaries()
     MessageScreenPrompt(optScreen, mbox)
     optScreen.setContent(messages)
@@ -660,11 +671,11 @@ def MessageScreenPrompt(optScreen, mbox, comment=None):
     topPrompt.append(comment if comment else "F1 or ? for help: ")
     optScreen.setTopPrompt("".join(topPrompt))
 
-def MessageShowUpdate(optScreen, mbox, count, final, pct, msg):
+def MessageShowUpdate(optScreen, mbox, count, pct, status, msg):
     # If this is called with final=False, then it's a good bet that
     # we're going to be here for a while, so time to start showing status
     global messageStart
-    if not final:
+    if status == mbox.READ_IN_PROGRESS:
         if not messageStart:
             optScreen.setContent(mbox.summaries())
         MessageScreenPrompt(optScreen, mbox, "%d%%. ^C to interrupt" % pct)
@@ -812,14 +823,14 @@ def EmailScreenSetup(win, account, mbox, idx, msg, text, longHeaders):
 def EmailContent(msg, text, longHeaders):
     headers = []
     if not longHeaders:
-        if "From" in msg: headers.append(u"From: " + unicode(msg["From"]))
-        if "Subject" in msg: headers.append(u"Subject: " + unicode(msg["Subject"]))
-        if "To" in msg: headers.append(u"To: " + unicode(msg["To"]))
-        if "Date" in msg: headers.append(u"Date: " + unicode(msg["Date"]))
+        if "From" in msg: headers.append(u"From: " + parseIso(msg["From"]))
+        if "Subject" in msg: headers.append(u"Subject: " + parseIso(msg["Subject"]))
+        if "To" in msg: headers.append(u"To: " + parseIso(msg["To"]))
+        if "Date" in msg: headers.append(u"Date: " + parseIso(msg["Date"]))
     else:
         for hdr in msg.keys():
-            headers.append(unicode(hdr) + ": " + unicode(msg[hdr]))
-    return u"\n".join(headers) + u'\n\n' + text
+            headers.append(unicode(hdr) + ": " + parseIso(msg[hdr]))
+    return u"\n".join(headers) + u'\n\n' + unescape(text)
 
 
 #       UTILITIES
