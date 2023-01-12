@@ -239,7 +239,7 @@ def AccountScreen(win, accounts):
     """Prompt user to select an account. When the user selects
     one, go to MailboxScreen().  If user selects 'q', this function
     returns."""
-    opts = [acct.getName() for acct in accounts]
+    opts = [acct.name for acct in accounts]
     optScreen = AccountScreenSetup(win, accounts, opts)
     optScreen.display()
     writeLog("About to enter main loop")
@@ -459,7 +459,7 @@ class ImapMboxScreen(MailboxScreen):
         win = self.win
         account = self.account
         win.erase()
-        win.addstr(1,1, "Opening account \"%s\"" % account.getName())
+        win.addstr(1,1, "Opening account \"%s\"" % account.name)
         win.refresh()
         # Attempt to connect. Keep going until user enters a valid password
         # or hits ^C
@@ -512,7 +512,8 @@ MESSAGE_HELP_BOTTOM = u"""
  ^N            next unread with same subject
  P             previous unread
  ^P            previous unread with same subject
- d             delete current email (move to Trash)
+
+ d             delete current email %s
  D             delete entire thread
  m             mark as read
  M             mark entire thread as read
@@ -595,7 +596,8 @@ def MessageScreen(win, account, mbox):
         if ic in (ord('x'), ESC):
             return ic
         if ic in (ord('?'), curses.KEY_F1):
-            HelpScreen(win, MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM)
+            helpStr = MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM
+            HelpScreen(win, helpStr % ("(move to trash)" if not mbox.isTrash() else "permanently"))
             optScreen = MessageScreenSetup(win, account, mbox, messages)
             optScreen.display()
             continue
@@ -664,7 +666,7 @@ def MessageScreenSetup(win, account, mbox, messages):
     return optScreen
 
 def MessageScreenPrompt(optScreen, mbox, comment=None):
-    topPrompt = ["%s   %d messages" % (mbox.getName(), mbox.nmessages())]
+    topPrompt = ["%s   %d messages" % (mbox.name, mbox.nmessages())]
     if mbox.nNew is not None: topPrompt.append(", %d new" % mbox.nNew)
     if mbox.nUnread is not None: topPrompt.append(", %d unread" % mbox.nUnread)
     topPrompt.append(": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages()))
@@ -675,7 +677,7 @@ def MessageShowUpdate(optScreen, mbox, count, pct, status, msg):
     # If this is called with final=False, then it's a good bet that
     # we're going to be here for a while, so time to start showing status
     global messageStart
-    if status == mbox.READ_IN_PROGRESS:
+    if status == mbox.STATE_READING:
         if not messageStart:
             optScreen.setContent(mbox.summaries())
         MessageScreenPrompt(optScreen, mbox, "%d%%. ^C to interrupt" % pct)

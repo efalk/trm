@@ -77,9 +77,10 @@ class Mbox(mailbox):
         self.busy = False               # Unavailable if True
         self.busy = name[1] is 'e'
     def __str__(self):
-        return "%s (saving...)" % self.name if self.busy else self.name
+        return "%s (saving...)" % self.name if self.state == self.STATE_SAVING else self.name
     def active(self):
-        return not self.busy
+        # TODO: let main worry about this
+        return self.state != self.STATE_SAVING
     def checkForUpdates(self):
         """Return True if the mailbox was updated by an external
         force since the last update."""
@@ -140,9 +141,9 @@ class Mbox(mailbox):
             dlock = dotlock.DotLock(self.path)
             if not self.lockboxes(flock, dlock):
                 if callback:
-                    callback(self, msgcount, 0, mailbox.READ_LOCKED,
+                    callback(self, msgcount, 0, mailbox.STATE_LOCKED,
                         "Failed to lock mailbox %, timed out" % self.path)
-                return mailbox.READ_LOCKED
+                return mailbox.STATE_LOCKED
 
             while True:
                 try:
@@ -164,23 +165,23 @@ class Mbox(mailbox):
                             lastcb = now
                             if callback:
                                 callback(self, msgcount, 100.*offset/self.size,
-                                    mailbox.READ_IN_PROGRESS, None)
+                                    mailbox.STATE_READING, None)
                             if now > lastrefresh + 5.0:
                                 lastrefresh = now
                                 dlock.refresh()
                 except KeyboardInterrupt:
                     if callback:
                         callback(self, msgcount, 100.*offset/self.size,
-                            mailbox.READ_INTERRUPTED, "Interrupted by user")
-                        return mailbox.READ_INTERRUPTED
+                            mailbox.STATE_INTERRUPTED, "Interrupted by user")
+                        return mailbox.STATE_INTERRUPTED
 
         finally:
             self.unlockboxes(flock, dlock)
             ifile.close()
 
         if callback:
-            callback(self, msgcount,100., mailbox.READ_FINISHED, None)
-        return mailbox.READ_FINISHED
+            callback(self, msgcount,100., mailbox.STATE_FINISHED, None)
+        return mailbox.STATE_FINISHED
 
     def getMessageSummary(self, ifile):
         """Scan for a "From " line, return its key headers."""

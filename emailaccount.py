@@ -30,13 +30,14 @@ class emailAccount(object):
     disconnect() accordingly. Use getMboxes() to get a list
     of mailboxes in this account."""
     def __init__(self, name):
-        self.name = name
+        self._name = name
         self.boxes = []
         self.acctType = None
-    def getName(self):
-        return self.name
+    @property
+    def name(self):
+        return self._name
     def __str__(self):
-        return self.name
+        return self._name
     def connect(self):
         """Connect to account, throw exception on failure"""
         pass
@@ -60,27 +61,36 @@ class mailbox(object):
     NO_UPDATES = 0      # No change since last asked
     BOX_APPENDED = 1    # Email has been added to the end
     BOX_CHANGED = 2     # Mailbox changed and should be re-read
-    # Status values for getOverview callback
-    READ_IN_PROGRESS = 0        # load in progress
-    READ_FINISHED = 1           # load complete
-    READ_INTERRUPTED = 2        # interrupted by user
-    READ_LOCKED = 3             # unable to acquire lock
+    # Status values for status and getOverview callback
+    STATE_EMPTY = 0         # no information loaded yet
+    STATE_READING = 1       # load in progress
+    STATE_FINISHED = 2      # load or save complete
+    STATE_INTERRUPTED = 3   # interrupted by user
+    STATE_LOCKED = 4        # unable to acquire lock
+    STATE_SAVING = 5        # writing back
 
     def __init__(self, name, path):
-        self.name = name
+        self._name = name
         self.path = path
+        self._state = mailbox.STATE_EMPTY
         self.messages = None
         self.msgdict = None
         self.nUnread = None
         self.nNew = None
-    def getName(self):
-        return self.name
+    @property
+    def name(self):
+        return self._name
+    def isTrash(self):
+        return self._name == "Trash"
+    @property
+    def state(self):
+        return self._state
     def active(self):
         return True
     def __str__(self):
-        return self.name
+        return self._name
     def __repr__(self):
-        return "<mailbox %s>" % self.name
+        return "<mailbox %s>" % self._name
     def nmessages(self):
         """Return # of messages in this mailbox, or None if not known."""
         return 0 if self.messages == None else len(self.messages)
@@ -93,7 +103,15 @@ class mailbox(object):
         As this could conceivably take a lot of time, an optional
         callback(mailbox, count, percent, status, msg) is called once per second,
         and at the conclusion."""
-        return mailbox.READ_FINISHED
+        self.state = mailbox.STATE_FINISHED
+        return mailbox.STATE_FINISHED
+    def save(self, callback):
+        """Save the mailbox. For some types of mailbox (e.g. mbox),
+        this can be very very slow. The optional
+        callback(mailbox, count, percent, status, msg) is called
+        once per second and at the conclusion."""
+        self.state = mailbox.STATE_FINISHED
+        return mailbox.STATE_FINISHED
     def checkForUpdates(self):
         """Return NO_UPDATES, BOX_APPENDED, or BOX_CHANGED."""
         return NO_UPDATES
@@ -136,8 +154,8 @@ class mailbox(object):
     def __lt__(self, other):
       """Sorting mailboxes is a little tricky. Certain mailboxes
       go right at the top, the remainder are sorted alphabetically."""
-      sn = self.name.lower()
-      on = other.name.lower()
+      sn = self._name.lower()
+      on = other._name.lower()
       specials = self.specials
       if sn in specials and on in specials:
           return specials[sn] < specials[on]
@@ -145,9 +163,9 @@ class mailbox(object):
           return True
       if on in specials:
           return False
-      return self.name < other.name
+      return self._name < other._name
     def __eq__(self, other):
-      return self.name == other.name
+      return self._name == other._name
 
     @staticmethod
     def readHeaders(ifile):
