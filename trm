@@ -548,7 +548,7 @@ Search:
         b       search entire body (potentially very slow)
 
     search commands: zero or more of:
-        :d       delete (move to trash)
+        :d       delete
         :m       move to INBOX
         :m box   move to specified mailbox
         :a file  append to file
@@ -570,6 +570,14 @@ def MessageScreen(win, account, mbox):
     optScreen.display()
 
     messageStart = False
+
+    # If returning to a mailbox that's been loaded, even if only
+    # partially, display it right away.
+    messages = mbox.summaries()
+    if messages:
+        MessageScreenPrompt(optScreen, mbox)
+        optScreen.setContent(messages)
+        optScreen.refresh()
 
     # This step can take a long time for a very large mailbox.
     # The lambda is called every half second or so with a status
@@ -597,7 +605,7 @@ def MessageScreen(win, account, mbox):
             return ic
         if ic in (ord('?'), curses.KEY_F1):
             helpStr = MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM
-            HelpScreen(win, helpStr % ("(move to trash)" if not mbox.isTrash() else "permanently"))
+            HelpScreen(win, helpStr % ("(move to Trash)" if not mbox.isTrash() else "permanently"))
             optScreen = MessageScreenSetup(win, account, mbox, messages)
             optScreen.display()
             continue
@@ -739,7 +747,7 @@ Email message viewer:
  P             previous unread
  ^P            previous unread with same subject
 
- d             delete current email (move to Trash)
+ d             delete current email %s
  D             delete entire thread
  m             mark as read
  M             mark entire thread as read
@@ -795,7 +803,7 @@ def EmailScreen(win, account, mbox, idx):
         if ic in (ord('x'), ESC):
             return ic
         if ic in (ord('?'), curses.KEY_F1):
-            HelpScreen(win, EMAIL_HELP)
+            HelpScreen(win, EMAIL_HELP % ("(move to Trash)" if not mbox.isTrash() else "permanently"))
             optScreen = EmailScreenSetup(win, account, mbox, idx, msg, text, longHeaders)
             optScreen.display()
             continue

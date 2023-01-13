@@ -76,6 +76,10 @@ class Mbox(mailbox):
         self.parser = email.parser.Parser()
         self.busy = False               # Unavailable if True
         self.busy = name[1] is 'e'
+        self.messages = []
+        self.msgdict = {}
+        self.nUnread = 0
+        self.nNew = 0
     def __str__(self):
         return "%s (saving...)" % self.name if self.state == self.STATE_SAVING else self.name
     def active(self):
@@ -116,7 +120,10 @@ class Mbox(mailbox):
         Return the total # of messages.  As this could conceivably
         take a lot of time, an optional callback(mbox, count,
         isFinal, pct, message) is called every 0.5 seconds or so,
-        and at the conclusion."""
+        and at the conclusion. If there are already mail summaries
+        in self.messages, reading continues where it left off. If
+        you want to start from scratch, set self.messages to None
+        before calling this."""
 
         # TODO: run this in a background thread
 
@@ -126,19 +133,23 @@ class Mbox(mailbox):
         # Every ten messages, check the time.
         # Every 0.5 seconds, send an update
         # Every 5 seconds, refresh the dotlock
-        self.messages = []
-        self.msgdict = {}
-        msgcount = 0    # Only check every 100 messages
-        offset = 0      # file offset
-        lastOffset = 0  # Offset of last seen "From " line.
-        self.nUnread = 0
-        self.nNew = 0
+        msgcount = len(self.messages)    # Only check every 100 messages
+        if self.messages:
+            lastOffset = self.messages[-1].offset
+            offset = lastOffset + self.messages[-1].size
+        else:
+            lastOffset = 0  # Offset of last seen "From " line.
+            offset = 0      # file offset
+            self.msgdict = {}
+            self.nUnread = 0
+            self.nNew = 0
         # Programming note: I originally did "with open(...) as ifile",
         # but it resulted in "'I/O operation on closed file' in  ignored"
         try:
             ifile = open(self.path, "r")
             flock = dotlock.FileLock(ifile)
             dlock = dotlock.DotLock(self.path)
+            ifile.seek(offset)
             if not self.lockboxes(flock, dlock):
                 if callback:
                     callback(self, msgcount, 0, mailbox.STATE_LOCKED,
