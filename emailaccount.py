@@ -109,11 +109,11 @@ class mailbox(object):
             self.chFlags(idx, messageSummary.FLAG_DELETED, 0)
             summary = self._summaries[idx]
             self.deleted.append(summary)
-            del self.msgdict[summary.key]
+            if summary.key in self.msgdict: del self.msgdict[summary.key]
             del self._summaries[idx]
             # TODO: create an "undo" object
         return self
-    def chFlags(self, idx, toSet, toClear):
+    def chFlags(self, idx, toSet, toClear, toToggle=0):
         """Change the flags on an entry in the mailbox. This can
         affect the counts of new and unread messages."""
         if idx >= 0 and idx < len(self._summaries):
@@ -121,11 +121,12 @@ class mailbox(object):
             newStatus = status = summary.status
             newStatus |= toSet
             newStatus &= ~toClear
+            newStatus ^= toToggle
             summary.status = newStatus
             summary.modified = True
             self.modified = True
             changed = status ^ newStatus
-            writeLog("old: %#x, new: %#x, changed: %#x" % (status, newStatus, changed))
+            #writeLog("old: %#x, new: %#x, changed: %#x" % (status, newStatus, changed))
             if self.nNew is not None and changed & messageSummary.FLAG_NEW:
                 self.nNew += 1 if newStatus & messageSummary.FLAG_NEW else -1
             if self.nUnread is not None and changed & messageSummary.FLAG_READ:
@@ -136,7 +137,7 @@ class mailbox(object):
                     self.nNew += delta
                 if self.nUnread is not None and changed & messageSummary.FLAG_READ:
                     self.nUnread -= delta
-            writeLog("nNew now %d, nUnread now %d" % (self.nNew, self.nUnread))
+            #writeLog("nNew now %d, nUnread now %d" % (self.nNew, self.nUnread))
 
 #    FLAG_DELETED = 1
 #    FLAG_NEW = 2
@@ -278,7 +279,7 @@ class messageSummary(object):
     def getValues(self):
         # Fit the status into three letters
         status = self.status
-        c1 = '*' if status & self.FLAG_FLAGGED else ' '
+        c1 = '!' if status & self.FLAG_FLAGGED else ' '
         c2 = 'D' if status & self.FLAG_DELETED else \
              'U' if not (status & self.FLAG_READ) else \
              'A' if status & self.FLAG_ANSWERED else \

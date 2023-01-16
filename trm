@@ -105,7 +105,7 @@ There are four main screens in trm:
 More on these modes below.
 
 
-Navigation and other common functions:
+Navigation and other common operations:
 
 Trm uses single-key commands in most cases. Navigation can go very quickly.
 The following commands are available in all modes. In many cases, there is
@@ -168,7 +168,7 @@ More on the different modes:
   The 'n' and 'p' commands change the selection in the usual way,
   while 'N' and 'P' select the next or previous unread message.
   You can also use 'd' to delete a message, 'm' to mark it as read,
-  'u' to mark it as unread, '*' to mark it as important, and so
+  'u' to mark it as unread, '!' to mark it as important, and so
   forth. Use '?' to get a full list of commands.
 
 • Message reading. This mode simply displays a message. Use the
@@ -178,7 +178,7 @@ More on the different modes:
   "text/plain" section, that is the part which is displayed. Else,
   a "text/html" section, if any.
 
-  The 'n', 'p', 'N', 'P', 'd', 'm', 'u', and '*' commands also
+  The 'n', 'p', 'N', 'P', 'd', 'm', 'u', and '!' commands also
   work in message reading mode. Use '?' for the full list of
   options.
 """
@@ -637,17 +637,18 @@ MESSAGE_HELP_BOTTOM = u"""
  M             mark entire thread as read
  u             mark as unread
  U             mark entire thread as unread
+ !             mark or unmark as important
  O             set selector order
  R             reverse selector order
  t             toggle threaded view (TODO)
  +             expand selected thread (TODO)
  -             unexpand selected thread (TODO)
- ^R            refresh view - resume reading mailbox (can take a while)
+ ^R            refresh mailbox - resume reading mailbox (can take a while)
  /             search, see below
 
 Flags:
 
- *      flagged important
+ !      flagged important
  N      new message
  U      unread message
  D      marked for deletion
@@ -706,8 +707,9 @@ def MessageScreen(win, account, mbox):
     oldUpdate = None
     while True:
         ic = win.getch()
+        optScreen.setStatus("").refresh()
         writeLog("Received character %d" % ic)
-        c = chr(ic) if ic < 128 else '\0'
+        c = chr(ic) if ic < 128 else None
         # Before proceeding, check for changes
         update = mbox.checkForUpdates()
         if update != oldUpdate:
@@ -744,12 +746,16 @@ def MessageScreen(win, account, mbox):
             if idx is not None:
                 optScreen.moveTo(idx)
                 MessageScreenPrompt(optScreen, mbox)
+            else:
+                optScreen.setStatus("At last unread message").refresh()
             continue
         if c == 'P':
             idx = mbox.previousUnread(optScreen.getCurrent())
             if idx is not None:
                 optScreen.moveTo(idx)
                 MessageScreenPrompt(optScreen, mbox)
+            else:
+                optScreen.setStatus("At first unread message").refresh()
             continue
         # If mailbox has changed, then none of the functions that would modify
         # or view it are valid. Catch those cases and tell the user to
@@ -765,7 +771,6 @@ def MessageScreen(win, account, mbox):
             writeLog("delete: idx = %d, direction = %d" % (idx, optScreen.direction))
             if optScreen.direction == -1: idx = mbox.previousMessage(idx)
             elif idx >= mbox.nmessages(): idx -= 1
-            writeLog("  new idx = %d" % idx)
             optScreen.moveTo(idx)
             optScreen.refresh()
             MessageScreenPrompt(optScreen, mbox)
@@ -779,6 +784,12 @@ def MessageScreen(win, account, mbox):
         if c == 'u':
             idx = optScreen.getCurrent()
             mbox.chFlags(idx, 0, messageSummary.FLAG_READ)
+            optScreen.displayContent(idx - optScreen.getOffset()).refresh()
+            MessageScreenPrompt(optScreen, mbox)
+            continue
+        if c == '!':
+            idx = optScreen.getCurrent()
+            mbox.chFlags(idx, 0, 0, messageSummary.FLAG_FLAGGED)
             optScreen.displayContent(idx - optScreen.getOffset()).refresh()
             MessageScreenPrompt(optScreen, mbox)
             continue
@@ -797,49 +808,52 @@ def MessageScreen(win, account, mbox):
             MessageScreenFetch(optScreen, mbox)
             optScreen.setStatus("")
             continue
+        if ic == CTRL_L:
+            optScreen.display().refresh()
+            continue
         if optScreen.commonKeys(ic):
             MessageScreenPrompt(optScreen, mbox)
             optScreen.refresh()
             continue
         idx = optScreen.isOptionKey(ic)
         if idx >= 0:
+            # Read one or more messages
             if mbox.updates == mbox.BOX_CHANGED:
                 writeLog("cannot view message '%d'" % idx)
                 optScreen.setStatus("Mailbox changed; reload required. ^R to re-load.").refresh()
                 continue
             writeLog("Chose option %d" % idx)
-            optScreen = None
             newIdx = idx
-            direction = 1
             while idx is not None:
                 # Launch email viewer
                 ic = EmailScreen(win, account, mbox, idx)
                 c = chr(ic) if ic < 128 else '\0'
                 if c == 'n':
                     idx = mbox.nextMessage(idx)
-                    direction = 1
+                    optScreen.setCurrent(idx)
                 elif c == 'p':
                     idx = mbox.previousMessage(idx)
-                    direction = -1
+                    optScreen.setCurrent(idx)
                 elif c == 'N':
                     idx = mbox.nextUnread(idx)
-                    direction = 1
+                    optScreen.setCurrent(idx)
                 elif c == 'P':
                     idx = mbox.previousUnread(idx)
-                    direction = -1
+                    optScreen.setCurrent(idx)
                 elif c == 'd':
                     # TODO: don't delete quite yet; mark as deleted and
                     # process when the user is done reading messages.
                     summary = mbox.getSummary(idx)
                     mbox.delSummary(idx)
-                    if direction == -1: idx = mbox.previousMessage(idx)
+                    if optScreen.direction == -1: idx = mbox.previousMessage(idx)
                     elif idx >= mbox.nmessages(): idx -= 1
+                    if idx is None: idx = 0
+                    optScreen.setCurrent(idx)
                 else:
                     idx = None
                 if idx is not None: newIdx = idx
-                writeLog("New idx = %s" % idx)
+                #writeLog("New idx = %s" % idx)
             idx = newIdx
-            optScreen = MessageScreenSetup(win, account, mbox, summaries)
             optScreen.resize().setCurrent(idx)
             MessageScreenPrompt(optScreen, mbox)
             optScreen.display()
@@ -1000,8 +1014,8 @@ def EmailScreen(win, account, mbox, idx):
     writeLog("About to enter EmailScreen main loop")
     while True:
         ic = win.getch()
-        c = chr(ic) if ic < 128 else '\0'
         writeLog("Received character %d" % ic)
+        c = chr(ic) if ic < 128 else None
         if c == 'q':
             mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
             # Nothing is actually written until the user closes the mailbox.

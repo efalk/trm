@@ -432,6 +432,7 @@ class OptionScreen(ContentScreen):
         #writeLog("setCurrent(%d), current=%d, offset=%d" % (i, self.current, self.offset))
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
+        self._direction = 1 if i >= self.current else -1
         self.current = i
         if i < self.offset:
             self.offset = i
@@ -451,7 +452,7 @@ class OptionScreen(ContentScreen):
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
         if i == self.current: return False
-        self._direction = 1 if i > self.current else -1
+        self._direction = 1 if i >= self.current else -1
         subwin = self.subwin
         current = self.current
         offset = self.offset
