@@ -78,7 +78,7 @@ class ContentScreen(object):
         self.subwin = None
         # Items below to be filled in by resize
         self.hgt, self.wid = self.win.getmaxyx()
-        self.contentY = self.statusY = self.helpY = 0
+        self.promptY = self.contentY = self.statusY = self.helpY = 0
         self.contentHgt = 0
         self.subwin = None
 
@@ -95,16 +95,24 @@ class ContentScreen(object):
         # two lines, but we don't enforce that. One blank line between
         # regions except below status.
         # promptY = 0
-        self.contentY = 2 if self.prompt else 0
-        self.helpY = y = self.hgt - len(self.shortHelp[0])
-        writeLog("resize: hgt=%d, len=%d, Y=%d" % (self.hgt, len(self.shortHelp[0]), self.helpY))
+        y = 0
+        if self.prompt:
+            self.promptY = y
+            y += 1
         if self.status is not None:
-            self.statusY = y-1
-            y -= 3
-        else:
-            y -= 2
-        self.contentHgt = y - self.contentY + 1
-        writeLog("hgt=%d, wid=%d, y=%d, 0" % (self.contentHgt,self.wid, self.contentY))
+            self.statusY = y
+            y += 1
+        if y > 0: y += 1        # leave a blank line
+        self.contentY = y
+        # Start filling from the bottom
+        y = self.hgt
+        if self.shortHelp:
+            y -= len(self.shortHelp[0])
+            self.helpY = y
+            y -= 1
+        #writeLog("resize: hgt=%d, len=%d, Y=%d" % (self.hgt, len(self.shortHelp[0]), self.helpY))
+        self.contentHgt = y - self.contentY
+        #writeLog("hgt=%d, wid=%d, y=%d, 0" % (self.contentHgt,self.wid, self.contentY))
         self.subwin = self.win.subwin(self.contentHgt,self.wid, self.contentY,0)
         self.subwin.scrollok(True)
         return self
@@ -169,6 +177,7 @@ class ContentScreen(object):
         """Toggle busy flag. Caller should call refresh()."""
         self.busy = busy
         self.displayShortHelp()
+        return self
 
     def refresh(self):
         """Tell curses to bring screen up to date."""
@@ -178,6 +187,7 @@ class ContentScreen(object):
     def setContent(self, content):
         """Replace content. Caller should call refresh() after."""
         self.content = content
+        self.subwin.clear()
         self.displayContent()
         return self
 
@@ -201,6 +211,7 @@ class ContentScreen(object):
         """Replace status. Caller should call refresh() after."""
         self.status = status
         self.win.addstr(self.statusY,0, status)
+        self.win.clrtoeol()
         return self
 
     def getOffset(self): return self.offset
@@ -294,7 +305,7 @@ class ContentScreen(object):
             writeLog("Received key %d" % c)
             if self.commonKeys(c):
                 continue
-            elif c in (ord('q'), ord('x'), ESC):
+            else:
                 return c
     def displayAndWait(self):
         self.display()
@@ -307,9 +318,9 @@ class PagerScreen(ContentScreen):
     """Displays text and a prompt.  If the user enters a command,
     returns the keycode of that command. Any method that doesn't
     have a specific return value returns self, for chaining."""
-    def __init__(self, win, text, prompt, shortHelp):
+    def __init__(self, win, text, prompt, shortHelp, status=None):
         writeLog("New PagerScreen, text:")
-        super(PagerScreen,self).__init__(win, prompt, shortHelp, text, None)
+        super(PagerScreen,self).__init__(win, prompt, shortHelp, text, status)
         self.formatted = None
 
     def resize(self):
@@ -367,6 +378,7 @@ class OptionScreen(ContentScreen):
         self.cmds = cmds = cmds + "? \nnp<>^$q"
         self.optKeys = "".join([c for c in self.optKeys if c not in cmds])
         self.current = 0
+        self._direction = 1
         self.maxopts = 0    # max options that can be displayed
 
     def resize(self):
@@ -409,6 +421,7 @@ class OptionScreen(ContentScreen):
             self.offset = self.contentLen - 2
         if self.current >= self.contentLen:
             self.current = self.contentLen - 1
+        self.subwin.clear()
         self.displayContent()
         self.subwin.refresh()
         return self
@@ -416,7 +429,7 @@ class OptionScreen(ContentScreen):
     def setCurrent(self, i):
         """Set current item. Caller should call displayContent() and refresh().
         Consider calling moveTo() instead."""
-        writeLog("setCurrent(%d), current=%d, offset=%d" % (i, self.current, self.offset))
+        #writeLog("setCurrent(%d), current=%d, offset=%d" % (i, self.current, self.offset))
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
         self.current = i
@@ -424,10 +437,13 @@ class OptionScreen(ContentScreen):
             self.offset = i
         elif i >= self.offset + self.maxopts:
             self.offset = max(0, i - self.maxopts + 2)
-        writeLog("  done, current=%d, offset=%d" % (self.current, self.offset))
+        #writeLog("  done, current=%d, offset=%d" % (self.current, self.offset))
         return self
 
     def getCurrent(self): return self.current
+
+    @property
+    def direction(self): return self._direction
 
     def moveTo(self, i):
         """Adjust index to the given value, scrolling if needed.
@@ -435,6 +451,7 @@ class OptionScreen(ContentScreen):
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
         if i == self.current: return False
+        self._direction = 1 if i > self.current else -1
         subwin = self.subwin
         current = self.current
         offset = self.offset

@@ -11,18 +11,22 @@ if PY3:
     import configparser
     # In Python3, curses takes unicode natively, so no
     # need to encode.
-    def fromUtf(s):
-        return s
+    def fromUtf(b):
+        """Takes bytes in, returns unicode string."""
+        return b.encode("utf8", "replace")
     def toUtf(s):
-        return s
+        """Takes unicode string in, returns bytes."""
+        return s.encode("utf8", "replace")
     def unicode(s):
         return s
 else:
     import ConfigParser as configparser
     def fromUtf(s):
-        return s.decode("utf8", "replace")
+        # Nothing to decode if already unicode
+        return s.decode("utf8", "replace") if isinstance(s, str) else s
     def toUtf(s):
-        return s.encode("utf8", "replace")
+        # Nothing to encode if not unicode
+        return s.encode("utf8", "replace") if isinstance(s, unicode) else s
 
 
 loggingEnabled = True   # TODO: false

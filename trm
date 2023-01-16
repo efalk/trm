@@ -40,9 +40,10 @@ import screens
 import emailaccount
 import mbox
 import imap
+from emailaccount import messageSummary
 from emailaccount import parseIso
 from keycodes import *
-from utils import writeLog, loggingEnabled, configGet, configSet
+from utils import writeLog, loggingEnabled, configGet, configSet, toUtf
 
 PY3 = sys.version_info[0] >= 3
 if PY3:
@@ -75,8 +76,113 @@ SPLASH_SCREEN = """
         information.
 
         Edward Falk falk@efalk.org
-        [Type any key to continue]
+
+        [Type '?' for long help, or any other key to continue]
 """
+
+MAIN_HELP = u"""
+This is a relatively simple text-based mail reader. For far more
+sophisticated mail readers, see PINE or MUTT. This one is written
+to  provide specific search and threading functions.
+
+Navigating through help:
+
+  ↑     up one line
+  ↓     down one line
+  PGUP  up one page
+  PGDN  down one page
+  HOME  back to top
+  END   go to end
+  q     return to previous screen
+
+There are four main screens in trm:
+
+• Account selection
+• Mailbox selection
+• Message selection
+• Message reading
+
+More on these modes below.
+
+
+Navigation and other common functions:
+
+Trm uses single-key commands in most cases. Navigation can go very quickly.
+The following commands are available in all modes. In many cases, there is
+more than one key for the same operation:
+
+  F1    ?          F1 or '?' give helps from any page.
+  q                "quit". Write out changes and return to previous page
+  x                "exit". Return to previous page immediately without writing anything
+  ↑     p          "Previous": up-arrow or 'p' moves up one line
+  ↓     n          "Next": down-arrow or 'n' moves down one line
+  PGUP  <  ^B      Back one page
+  PGDN  >  ^F  SP  Forward one page
+  HOME  ^          Go to top
+  END   $          Go to end
+  CR               select current item
+  ^L               refresh screen
+  ^C               exit trm
+  ESC              return to previous screen (same as 'x')
+
+  /                Begin a search.
+
+
+Short help:
+
+At the bottom of the screen you will see a summary of the most
+commonly-used commands for the current mode. It looks something
+like this:
+
+    ?  Help      ↑ p Prev      PGUP < PrevPage    HOME ^ Top       + Add
+    CR Select    ↓ n Next      PGDN > NextPage    END  $ Bottom    - Remove
+
+There are usually more commands than this available, so use F1 or '?'
+to see a more complete list.
+
+
+More on the different modes:
+
+• Account selection. In this screen, you select the email account
+  you wish to read. By default, when you first start using trm,
+  "local" is the only option. This refers to the email stored on
+  your local system in /var/spool/mail or /var/mail (depending on OS).
+  Even "local" won't be present if there is no mail on your
+  system.
+
+  The "+" key brings you to a dialog that allows you to add other
+  email accounts to trm. At present, only IMAP is supported.
+
+  Selecting an account brings you to:
+
+• Mailbox selection. All of the available mailboxes for this account
+  are displayed, with letters next to them. You can select any mailbox
+  to read by typing the letter next to it, or by using the usual
+  navigation keys to highlight a mailbox and then hitting CR.
+
+• Message selection. Messages are displayed in the usual way. Use
+  the navigation keys or type a letter to choose a message to be read.
+  The 'O' command changes the sort criteria for the messages (default
+  is by date)
+
+  The 'n' and 'p' commands change the selection in the usual way,
+  while 'N' and 'P' select the next or previous unread message.
+  You can also use 'd' to delete a message, 'm' to mark it as read,
+  'u' to mark it as unread, '*' to mark it as important, and so
+  forth. Use '?' to get a full list of commands.
+
+• Message reading. This mode simply displays a message. Use the
+  navigation keys to scroll back and forth in the usual way.
+
+  Trm doesn't handle attachments (yet). If the message contains a
+  "text/plain" section, that is the part which is displayed. Else,
+  a "text/html" section, if any.
+
+  The 'n', 'p', 'N', 'P', 'd', 'm', 'u', and '*' commands also
+  work in message reading mode. Use '?' for the full list of
+  options.
+"""
+
 
 rcfile = None
 mailrc = None
@@ -211,14 +317,18 @@ def SplashScreen(win):
     else:
         message = SPLASH_SCREEN
     screen = screens.ShortMessage(win, message)
-    screen.displayAndWait()
+    c = screen.displayAndWait()
     config.set("global","splashscreen", VERSION)
+    if c in (ord('?'), curses.KEY_F1):
+        HelpScreen(win, MAIN_HELP)
 
 def HelpScreen(win, text):
-    screens.PagerScreen(win, text, 'Help',
+    c = screens.PagerScreen(win, text, 'Help',
         (("↑ Up one", "↓ Down one"), ("PGUP < Page up", "PGDN > Page down"),
-            ("HOME ^ Top", "END  $ Bottom"), ("q Exit help",))) \
+            ("HOME ^ Top", "END  $ Bottom"), ("q Exit help", "? long help"))) \
             .displayAndWait()
+    if c in (ord('?'), curses.KEY_F1):
+        HelpScreen(win, MAIN_HELP)
 
 
 #       ACCOUNT SELECTION
@@ -287,6 +397,14 @@ def AccountScreenSetup(win, accounts, opts):
 
 
 #       MAILBOX SELECTION
+
+# PROGRAMMING NOTES:
+#
+# The behavior of the message selection screen varies depending on
+# the mailbox type, so we use an object-oriented approach here.
+# The actual working code is in class MailboxScreen or a subclass.
+# The entry point to this mode, DoMboxScreen() chooses the
+# correct subclass depending on mailbox type.
 
 def DoMboxScreen(win, account):
     """Display and operate the mailbox selection screen. Most
@@ -524,7 +642,7 @@ MESSAGE_HELP_BOTTOM = u"""
  t             toggle threaded view (TODO)
  +             expand selected thread (TODO)
  -             unexpand selected thread (TODO)
- ^R            refresh view - re-read mailbox (can take a while)
+ ^R            refresh view - resume reading mailbox (can take a while)
  /             search, see below
 
 Flags:
@@ -565,74 +683,134 @@ def MessageScreen(win, account, mbox):
     returns."""
     global messageStart
 
+    # Display the message selection screen with whatever messages
+    # we already have, then start fetching more.
+
     optScreen = MessageScreenSetup(win, account, mbox, [])
     optScreen.setBusy(True)
     optScreen.display()
 
-    messageStart = False
-
     # If returning to a mailbox that's been loaded, even if only
     # partially, display it right away.
-    messages = mbox.summaries()
-    if messages:
+    summaries = mbox.summaries()
+    if summaries:
         MessageScreenPrompt(optScreen, mbox)
-        optScreen.setContent(messages)
+        optScreen.setContent(summaries)
         optScreen.refresh()
 
-    # This step can take a long time for a very large mailbox.
-    # The lambda is called every half second or so with a status
-    # update. TODO: run this in a background thread.
-    status = mbox.getOverview(lambda mbox,count,final,pct,msg: \
-        MessageShowUpdate(optScreen, mbox, count, final, pct, msg))
+    MessageScreenFetch(optScreen, mbox)
 
-    messages = mbox.summaries()
-    MessageScreenPrompt(optScreen, mbox)
-    optScreen.setContent(messages)
-    optScreen.setBusy(False)
-    optScreen.refresh()
-
-    direction = 1       # where do we go after a delete
+    summaries = mbox.summaries()
 
     writeLog("About to enter MessageScreen main loop")
+    oldUpdate = None
     while True:
         ic = win.getch()
         writeLog("Received character %d" % ic)
         c = chr(ic) if ic < 128 else '\0'
+        # Before proceeding, check for changes
+        update = mbox.checkForUpdates()
+        if update != oldUpdate:
+            oldUpdate = update
+            if update == mbox.BOX_APPENDED:
+                writeLog("update=%d, state=%d" % (update, mbox.state))
+                if mbox.state == mbox.STATE_FINISHED:
+                    # If the mbox state was FINISHED, then a) the user
+                    # was happy to let it complete loading, and b) there
+                    # probably isn't much more to load. So in this case,
+                    # we go ahead and start loading again.
+                    optScreen.setStatus("More email has arrived.").refresh()
+                    MessageScreenFetch(optScreen, mbox)
+                else:
+                    # Just inform the user
+                    optScreen.setStatus("More email has arrived, ^R to update.").refresh()
+            elif update == mbox.BOX_CHANGED:
+                # For an mbox mailbox, a full re-read is required. Inform the user.
+                # TODO: wipe out the existing message list? Start loading?
+                optScreen.setStatus("Mailbox has been modified. ^R to re-load.").refresh()
         if c == 'q':
-            writeLog("TODO: write out changes")
+            if mbox.modified:
+                writeLog("TODO: write out changes")
             return ic
         if ic in (ord('x'), ESC):
             return ic
         if ic in (ord('?'), curses.KEY_F1):
             helpStr = MESSAGE_HELP_TOP + COMMON_HELP + MESSAGE_HELP_BOTTOM
             HelpScreen(win, helpStr % ("(move to Trash)" if not mbox.isTrash() else "permanently"))
-            optScreen = MessageScreenSetup(win, account, mbox, messages)
             optScreen.display()
             continue
         if c == 'N':
             idx = mbox.nextUnread(optScreen.getCurrent())
             if idx is not None:
                 optScreen.moveTo(idx)
-            direction = 1
+                MessageScreenPrompt(optScreen, mbox)
             continue
         if c == 'P':
             idx = mbox.previousUnread(optScreen.getCurrent())
             if idx is not None:
                 optScreen.moveTo(idx)
-            direction = -1
+                MessageScreenPrompt(optScreen, mbox)
             continue
-        # TODO: d,D,m,M,O,R,t,u
+        # If mailbox has changed, then none of the functions that would modify
+        # or view it are valid. Catch those cases and tell the user to
+        # refresh.
+        if mbox.updates == mbox.BOX_CHANGED and c in 'dDmMuU/':
+            writeLog("cannot execute command '%c'" % c)
+            optScreen.setStatus("Mailbox reload required. ^R to re-load.").refresh()
+            continue
+        if c == 'd':
+            idx = optScreen.getCurrent()
+            mbox.delSummary(idx)
+            optScreen.setContent(mbox.summaries())
+            writeLog("delete: idx = %d, direction = %d" % (idx, optScreen.direction))
+            if optScreen.direction == -1: idx = mbox.previousMessage(idx)
+            elif idx >= mbox.nmessages(): idx -= 1
+            writeLog("  new idx = %d" % idx)
+            optScreen.moveTo(idx)
+            optScreen.refresh()
+            MessageScreenPrompt(optScreen, mbox)
+            continue
+        if c == 'm':
+            idx = optScreen.getCurrent()
+            mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
+            optScreen.displayContent(idx - optScreen.getOffset()).refresh()
+            MessageScreenPrompt(optScreen, mbox)
+            continue
+        if c == 'u':
+            idx = optScreen.getCurrent()
+            mbox.chFlags(idx, 0, messageSummary.FLAG_READ)
+            optScreen.displayContent(idx - optScreen.getOffset()).refresh()
+            MessageScreenPrompt(optScreen, mbox)
+            continue
+        # TODO: D,m,M,O,R,t,u
+# D             delete entire thread
+# M             mark entire thread as read
+# O             set selector order
+# R             reverse selector order
+# t             toggle threaded view (TODO)
+# +             expand selected thread (TODO)
+# -             unexpand selected thread (TODO)
+# ^R            refresh view - re-read mailbox (can take a while)
+# /             search, see below
+
+        if ic == CTRL_R:
+            MessageScreenFetch(optScreen, mbox)
+            optScreen.setStatus("")
+            continue
         if optScreen.commonKeys(ic):
-            if c == 'n': direction = 1
-            if c == 'p': direction = -1
             MessageScreenPrompt(optScreen, mbox)
             optScreen.refresh()
             continue
         idx = optScreen.isOptionKey(ic)
         if idx >= 0:
+            if mbox.updates == mbox.BOX_CHANGED:
+                writeLog("cannot view message '%d'" % idx)
+                optScreen.setStatus("Mailbox changed; reload required. ^R to re-load.").refresh()
+                continue
             writeLog("Chose option %d" % idx)
             optScreen = None
             newIdx = idx
+            direction = 1
             while idx is not None:
                 # Launch email viewer
                 ic = EmailScreen(win, account, mbox, idx)
@@ -649,21 +827,27 @@ def MessageScreen(win, account, mbox):
                 elif c == 'P':
                     idx = mbox.previousUnread(idx)
                     direction = -1
+                elif c == 'd':
+                    # TODO: don't delete quite yet; mark as deleted and
+                    # process when the user is done reading messages.
+                    summary = mbox.getSummary(idx)
+                    mbox.delSummary(idx)
+                    if direction == -1: idx = mbox.previousMessage(idx)
+                    elif idx >= mbox.nmessages(): idx -= 1
                 else:
                     idx = None
                 if idx is not None: newIdx = idx
                 writeLog("New idx = %s" % idx)
             idx = newIdx
-            optScreen = MessageScreenSetup(win, account, mbox, messages)
+            optScreen = MessageScreenSetup(win, account, mbox, summaries)
             optScreen.resize().setCurrent(idx)
             MessageScreenPrompt(optScreen, mbox)
             optScreen.display()
             continue
         writeLog("Ignoring key code %d" % ic)
-        # TODO: detect changes
 
-def MessageScreenSetup(win, account, mbox, messages):
-    optScreen = MessageOptionScreen(win, messages, mbox.name,
+def MessageScreenSetup(win, account, mbox, summaries):
+    optScreen = MessageOptionScreen(win, summaries, mbox.name,
         (("?  Help", "CR Select"), ("↑ p Prev", "↓ n Next"),
             ("N Next Unread", "P Prev Unread"),
             ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
@@ -677,14 +861,34 @@ def MessageScreenPrompt(optScreen, mbox, comment=None):
     topPrompt = ["%s   %d messages" % (mbox.name, mbox.nmessages())]
     if mbox.nNew is not None: topPrompt.append(", %d new" % mbox.nNew)
     if mbox.nUnread is not None: topPrompt.append(", %d unread" % mbox.nUnread)
+    summaries = mbox.summaries()
     topPrompt.append(": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages()))
     topPrompt.append(comment if comment else "F1 or ? for help: ")
     optScreen.setTopPrompt("".join(topPrompt))
+
+def MessageScreenFetch(optScreen, mbox):
+    global messageStart
+    messageStart = False
+
+    optScreen.setBusy(True).refresh()
+
+    # This step can take a long time for a very large mailbox.
+    # The lambda is called every half second or so with a status
+    # update. TODO: run this in a background thread.
+    status = mbox.getOverview(lambda mbox,count,final,pct,msg: \
+        MessageShowUpdate(optScreen, mbox, count, final, pct, msg))
+
+    MessageScreenPrompt(optScreen, mbox)
+    optScreen.setContent(mbox.summaries())
+    optScreen.setBusy(False).refresh()
 
 def MessageShowUpdate(optScreen, mbox, count, pct, status, msg):
     # If this is called with final=False, then it's a good bet that
     # we're going to be here for a while, so time to start showing status
     global messageStart
+    if msg:
+        writeLog(msg)
+        optScreen.setStatus(msg).refresh()
     if status == mbox.STATE_READING:
         if not messageStart:
             optScreen.setContent(mbox.summaries())
@@ -721,7 +925,7 @@ class MessageOptionScreen(screens.ColumnOptionScreen):
             setCwids((subjwid, fromwid))
 
 
-#       Message Viewer
+#       MESSAGE VIEWER
 
 EMAIL_HELP = u"""
 Email message viewer:
@@ -757,6 +961,7 @@ Email message viewer:
 def EmailScreen(win, account, mbox, idx):
     """Display the selected message."""
 
+    summary = mbox.getSummary(idx)
     msg = mbox.getMessage(idx)
     # TODO: handle not found
     # If multipart, search for a text/plain part
@@ -798,7 +1003,8 @@ def EmailScreen(win, account, mbox, idx):
         c = chr(ic) if ic < 128 else '\0'
         writeLog("Received character %d" % ic)
         if c == 'q':
-            writeLog("TODO: write out changes")
+            mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
+            # Nothing is actually written until the user closes the mailbox.
             return ic
         if ic in (ord('x'), ESC):
             return ic
@@ -810,7 +1016,9 @@ def EmailScreen(win, account, mbox, idx):
         if c == 'H':
             longHeaders = not longHeaders
             optScreen.setContent(EmailContent(msg, text, longHeaders)).refresh()
+            continue
         if c in "npNPdD":
+            mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
             return ic
         # TODO: m,M,O,R,t,u
         if optScreen.commonKeys(ic):

@@ -7,5 +7,6 @@ CTRL_F = CTRL('F')
 CTRL_L = CTRL('L')
 CTRL_N = CTRL('N')
 CTRL_P = CTRL('P')
+CTRL_R = CTRL('R')
 CTRL_Y = CTRL('Y')
 

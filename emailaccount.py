@@ -72,11 +72,14 @@ class mailbox(object):
     def __init__(self, name, path):
         self._name = name
         self.path = path
+        self.updates = mailbox.NO_UPDATES
         self._state = mailbox.STATE_EMPTY
-        self.messages = None
+        self._summaries = None
         self.msgdict = None
         self.nUnread = None
         self.nNew = None
+        self.modified = True
+        self.deleted = []
     @property
     def name(self):
         return self._name
@@ -93,10 +96,57 @@ class mailbox(object):
         return "<mailbox %s>" % self._name
     def nmessages(self):
         """Return # of messages in this mailbox, or None if not known."""
-        return 0 if self.messages == None else len(self.messages)
+        return 0 if self._summaries == None else len(self._summaries)
     def summaries(self):
         """Return array of message summaries."""
-        return self.messages
+        return self._summaries
+    def getSummary(self, idx):
+        if idx < 0 or idx >= len(self._summaries): return None
+        return self._summaries[idx]
+    def delSummary(self, idx):
+        """Delete this item from the summary."""
+        if idx >= 0 and idx < len(self._summaries):
+            self.chFlags(idx, messageSummary.FLAG_DELETED, 0)
+            summary = self._summaries[idx]
+            self.deleted.append(summary)
+            del self.msgdict[summary.key]
+            del self._summaries[idx]
+            # TODO: create an "undo" object
+        return self
+    def chFlags(self, idx, toSet, toClear):
+        """Change the flags on an entry in the mailbox. This can
+        affect the counts of new and unread messages."""
+        if idx >= 0 and idx < len(self._summaries):
+            summary = self._summaries[idx]
+            newStatus = status = summary.status
+            newStatus |= toSet
+            newStatus &= ~toClear
+            summary.status = newStatus
+            summary.modified = True
+            self.modified = True
+            changed = status ^ newStatus
+            writeLog("old: %#x, new: %#x, changed: %#x" % (status, newStatus, changed))
+            if self.nNew is not None and changed & messageSummary.FLAG_NEW:
+                self.nNew += 1 if newStatus & messageSummary.FLAG_NEW else -1
+            if self.nUnread is not None and changed & messageSummary.FLAG_READ:
+                self.nUnread += -1 if newStatus & messageSummary.FLAG_READ else 1
+            if changed & messageSummary.FLAG_DELETED:
+                delta = -1 if newStatus & messageSummary.FLAG_DELETED else 1
+                if self.nNew is not None and newStatus & messageSummary.FLAG_NEW:
+                    self.nNew += delta
+                if self.nUnread is not None and changed & messageSummary.FLAG_READ:
+                    self.nUnread -= delta
+            writeLog("nNew now %d, nUnread now %d" % (self.nNew, self.nUnread))
+
+#    FLAG_DELETED = 1
+#    FLAG_NEW = 2
+#    FLAG_READ = 4
+#    FLAG_ANSWERED = 8
+#    FLAG_FORWARDED = 0x10
+#    FLAG_DIRECT = 0x20
+#    FLAG_CC = 0x40
+#    FLAG_SELECTED = 0x80
+#    FLAG_FLAGGED = 0x100
     def getOverview(self, callback):
         """Get all of the Subject, From, To, and Date headers.
         Return the total # of messages.
@@ -128,22 +178,22 @@ class mailbox(object):
         return None
     def nextMessage(self, n):
         """Return index of next message after this, or None."""
-        return None if not self.messages or n >= len(self.messages)-1 else n+1
+        return None if not self._summaries or n >= len(self._summaries)-1 else n+1
     def previousMessage(self, n):
         """Return index of previous message before this, or None."""
-        return None if not self.messages or n <= 0 else n-1
+        return None if not self._summaries or n <= 0 else n-1
     def nextUnread(self, n):
         """Return index of next unread message after this, or None."""
-        if not self.messages: return None
-        for i in range(n+1, len(self.messages)):
-            if not self.messages[i].status & messageSummary.FLAG_READ:
+        if not self._summaries: return None
+        for i in range(n+1, len(self._summaries)):
+            if not self._summaries[i].status & messageSummary.FLAG_READ:
                 return i
         return None
     def previousUnread(self, n):
         """Return index of previous unread message before this, or None."""
-        if not self.messages: return None
+        if not self._summaries: return None
         for i in range(n-1, -1, -1):
-            if not self.messages[i].status & messageSummary.FLAG_READ:
+            if not self._summaries[i].status & messageSummary.FLAG_READ:
                 return i
         return None
 
@@ -222,6 +272,7 @@ class messageSummary(object):
         self.uid = None
         self.key = None
         self.idx = None         # Counting from 0
+        self.modified = False
     def __repr__(self):
         return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):

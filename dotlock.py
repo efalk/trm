@@ -5,12 +5,18 @@ from __future__ import print_function
 
 from contextlib import contextmanager
 import errno
-import fcntl
 import os
 import signal
 import socket
 import sys
 import time
+
+try:
+    import fcntl
+except ImportError:
+    has_fcntl = False
+else:
+    has_fcntl = True
 
 PY3 = sys.version_info[0] >= 3
 if PY3:
@@ -148,23 +154,6 @@ class DotLock(__commonLock):
         self.locked = st.st_nlink == 2
         return self.locked
 
-    def lock(self, timeout=60):
-        """Acquire the lock, wait up to timeout seconds. Return
-        True on success."""
-        if self.locked:
-            return False
-        if self.tryLock():
-            return True
-        dt = 1./16.     # first sleep, 1/16 second
-        while timeout > 0:
-            time.sleep(dt)
-            timeout -= dt
-            if self.tryLock():
-                return True
-            if dt < 8:
-                dt = min(dt * 2, timeout)
-        return False
-
     def refresh(self):
         """Update the creation time on the lockfile so that other
         processes don't think it's become stale."""
@@ -221,15 +210,7 @@ class FileLock(__commonLock):
             self.locked = True
             return True
         else:
-            with doTimeout(timeout):
-                try:
-                    fcntl.flock(self.file, fcntl.LOCK_EX)
-                    self.locked = True
-                    return True
-                except (OSError, IOError) as e:
-                    if e.errno == errno.EINTR:
-                        return False
-                    raise
+            return super(FileLock,self).lock(timeout)
 
     def unlock(self):
         """Release the lock. Implicitly called when the the lock goes
