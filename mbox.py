@@ -265,7 +265,9 @@ class Mbox(emailaccount.mailbox):
         if "From" in fullhdrs: msg.From = fullhdrs["From"]
         if "To" in fullhdrs: msg.To = fullhdrs["To"]
         if "Subject" in fullhdrs: msg.Subject = fullhdrs["Subject"]
-        if "Date" in fullhdrs: msg.Date = fullhdrs["Date"]
+        if "Date" in fullhdrs:
+            msg.Date = fullhdrs["Date"]
+            msg.parseDate()
         if "Status" in fullhdrs:
             status = fullhdrs["Status"]
             if 'R' in status: msg.status |= msg.FLAG_READ

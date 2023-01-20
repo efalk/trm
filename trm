@@ -640,7 +640,6 @@ MESSAGE_HELP_BOTTOM = u"""
  U             mark entire thread as unread
  !             mark or unmark as important
  S             set selector order
- R             reverse selector order
  t             toggle threaded view (TODO)
  →  +          expand selected thread (TODO)
  ←  -          unexpand selected thread (TODO)
@@ -816,15 +815,15 @@ def MessageScreen(win, account, mbox):
             continue
         if c == 'S':
             sortorder = screens.simpleDiagWindow(win, hgt=20).display(SORT_HELP).read()
-            writeLog("New sort order %s" % sortorder)
             # Note the current message
             row = optScreen.getRow()
             msg = summaries[optScreen.getCurrent()]
             viewOpts.sortOrder = filter(lambda c: c in "sSfFtTdD", sortorder)
-            writeLog("new sort order: %s" % viewOpts.sortOrder)
             summaries = FilterSummaries(mbox, viewOpts)
             optScreen.setContent(summaries)
             optScreen.setCurrent(msg.client, row)
+            MessageScreenPrompt(optScreen, mbox)
+            optScreen.subwin.clear()
             optScreen.displayContent()
             optScreen.setStatus("Sort order %s" % (viewOpts.sortOrder or "natural"))
             optScreen.refresh()
@@ -848,11 +847,9 @@ def MessageScreen(win, account, mbox):
             optScreen.displayContent(idx - optScreen.getOffset()).refresh()
             MessageScreenPrompt(optScreen, mbox)
             continue
-        # TODO: D,m,M,S,R,t,u
+        # TODO: D,m,M,S,t,u
 # D             delete entire thread
 # M             mark entire thread as read
-# S             set selector order
-# R             reverse selector order
 # t             toggle threaded view (TODO)
 # +             expand selected thread (TODO)
 # -             unexpand selected thread (TODO)
@@ -921,7 +918,7 @@ def MessageScreenSetup(win, account, mbox, summaries):
             ("N Next Unread", "P Prev Unread"),
             ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
             ("d Delete", ""), ("q Return", "x Abort")),
-        "NPdDmMuUSRt")
+        "NPdDmMuUSt")
     optScreen.resize()
     MessageScreenPrompt(optScreen, mbox)
     return optScreen
@@ -961,17 +958,21 @@ def FilterSummaries(mbox, viewOpts):
     else:
         summaries = filter(lambda m: not (m.status & m.FLAG_DELETED), summaries)
 
-    # TODO: multiple sort, e.g. sort by subject, then by date
+    # TODO: If all the characters in sortOrder are upper case, or all are
+    # lower case, we could do this all in one pass by passing multiple keys
+    # to attrgetter.
     sortOrder = viewOpts.sortOrder
     if sortOrder:
-        if sortOrder[0] in "Ss":
-            summaries.sort(key=operator.attrgetter("Subject"), reverse=(sortOrder=='S'))
-        elif sortOrder[0] in "Ff":
-            summaries.sort(key=operator.attrgetter("From"), reverse=(sortOrder=='F'))
-        elif sortOrder[0] in "Tt":
-            summaries.sort(key=operator.attrgetter("To"), reverse=(sortOrder=='T'))
-        elif sortOrder[0] in "Dd":
-            summaries.sort(key=operator.attrgetter("Date"), reverse=(sortOrder=='T'))
+        sortOrder = reversed(sortOrder)
+        for c in sortOrder:
+            if c in "Ss":
+                summaries.sort(key=operator.attrgetter("Subject"), reverse=(c=='S'))
+            elif c in "Ff":
+                summaries.sort(key=operator.attrgetter("From"), reverse=(c=='F'))
+            elif c in "Tt":
+                summaries.sort(key=operator.attrgetter("To"), reverse=(c=='T'))
+            elif c in "Dd":
+                summaries.sort(key=operator.attrgetter("udate"), reverse=(c=='D'))
     for i,msg in enumerate(summaries): msg.client = i
     return summaries
 
@@ -1113,7 +1114,7 @@ def EmailScreen(win, account, mbox, summaries, idx):
         if c in "npNPdD":
             mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
             return ic
-        # TODO: m,M,S,R,t,u
+        # TODO: m,M,S,t,u
         if optScreen.commonKeys(ic):
             optScreen.refresh()
             continue

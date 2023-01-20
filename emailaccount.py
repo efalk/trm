@@ -4,9 +4,11 @@
 from __future__ import print_function
 
 import email.header
+import email.utils
 import os
 import re
 import sys
+import time
 
 from utils import writeLog, human_readable, toU
 
@@ -281,6 +283,7 @@ class messageSummary(object):
         self.To = None
         self.Subject = None
         self.Date = None
+        self.udate = None       # Unix time
         self.status = 0
         self.MessageId = None
         self.uid = None
@@ -295,6 +298,7 @@ class messageSummary(object):
     def __repr__(self):
         return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):
+        """Return a (status, subject, from, date, size) tuple."""
         # Fit the status into three letters
         status = self.status
         c1 = '!' if status & self.FLAG_FLAGGED else ' '
@@ -306,9 +310,21 @@ class messageSummary(object):
         c3 = '+' if status & self.FLAG_DIRECT else \
              '-' if status & self.FLAG_CC else ' '
         status = c1+c2+c3
-        return (status, self.Subject, self.From, self.Date,
+        date = time.strftime("%Y-%m-%d %H:%M", time.localtime(self.udate))
+        return (status, self.Subject, self.From, date,
             human_readable(self.size))
+    def parseDate(self):
+        st = email.utils.parsedate_tz(self.Date)
+        if st is None:
+            self.udate = 0    # TODO: is there a better choice?
+        else:
+            self.udate = time.mktime(st[:9])
+            if st[9]:
+                self.udate += st[9]
+        return self
+
     def getMessage(self, mbox):
+        """Return the email.message object for this message."""
         return None
 
 
