@@ -74,6 +74,12 @@ class mailbox(object):
         self.path = path
         self.updates = mailbox.NO_UPDATES
         self._state = mailbox.STATE_EMPTY
+        # Note: the _summaries list is treated as immutable. Messages
+        # are deleted by having their "FLAG_DELETED" status flag set,
+        # and then the message is deleted when the mailbox is written
+        # back out. Clients that want to delete, sort, or otherwise
+        # modify the email list will make a copy of the _summaries
+        # array and modify that.
         self._summaries = None
         self.msgdict = None
         self.nUnread = None
@@ -103,16 +109,16 @@ class mailbox(object):
     def getSummary(self, idx):
         if idx < 0 or idx >= len(self._summaries): return None
         return self._summaries[idx]
-    def delSummary(self, idx):
-        """Delete this item from the summary."""
-        if idx >= 0 and idx < len(self._summaries):
-            self.chFlags(idx, messageSummary.FLAG_DELETED, 0)
-            summary = self._summaries[idx]
-            self.deleted.append(summary)
-            if summary.key in self.msgdict: del self.msgdict[summary.key]
-            del self._summaries[idx]
-            # TODO: create an "undo" object
-        return self
+#    def delSummary(self, idx):
+#        """Delete this item from the summary."""
+#        if idx >= 0 and idx < len(self._summaries):
+#            self.chFlags(idx, messageSummary.FLAG_DELETED, 0)
+#            summary = self._summaries[idx]
+#            self.deleted.append(summary)
+#            if summary.key in self.msgdict: del self.msgdict[summary.key]
+#            del self._summaries[idx]
+#            # TODO: create an "undo" object
+#        return self
     def chFlags(self, idx, toSet, toClear, toToggle=0):
         """Change the flags on an entry in the mailbox. This can
         affect the counts of new and unread messages."""
@@ -122,6 +128,7 @@ class mailbox(object):
             newStatus |= toSet
             newStatus &= ~toClear
             newStatus ^= toToggle
+            #writeLog("change flags of item %d, %s %x => %x" % (idx, summary.Subject, status, newStatus))
             summary.status = newStatus
             summary.modified = True
             self.modified = True
@@ -133,11 +140,13 @@ class mailbox(object):
                 self.nUnread += -1 if newStatus & messageSummary.FLAG_READ else 1
             if changed & messageSummary.FLAG_DELETED:
                 delta = -1 if newStatus & messageSummary.FLAG_DELETED else 1
+                #writeLog("  deleted, delta=%d" % delta)
                 if self.nNew is not None and newStatus & messageSummary.FLAG_NEW:
                     self.nNew += delta
-                if self.nUnread is not None and changed & messageSummary.FLAG_READ:
-                    self.nUnread -= delta
+                if self.nUnread is not None and not (newStatus & messageSummary.FLAG_READ):
+                    self.nUnread += delta
             #writeLog("nNew now %d, nUnread now %d" % (self.nNew, self.nUnread))
+        return self
 
 #    FLAG_DELETED = 1
 #    FLAG_NEW = 2
@@ -177,24 +186,28 @@ class mailbox(object):
         """Return full message as an email.message object.
         May return None for a non-available message."""
         return None
-    def nextMessage(self, n):
+    def nextMessage(self, n, summaries=None):
         """Return index of next message after this, or None."""
-        return None if not self._summaries or n >= len(self._summaries)-1 else n+1
-    def previousMessage(self, n):
+        if not summaries: summaries = self._summaries
+        return None if not summaries or n >= len(summaries)-1 else n+1
+    def previousMessage(self, n, summaries=None):
         """Return index of previous message before this, or None."""
-        return None if not self._summaries or n <= 0 else n-1
-    def nextUnread(self, n):
+        if not summaries: summaries = self._summaries
+        return None if not summaries or n <= 0 else n-1
+    def nextUnread(self, n, summaries=None):
         """Return index of next unread message after this, or None."""
-        if not self._summaries: return None
-        for i in range(n+1, len(self._summaries)):
-            if not self._summaries[i].status & messageSummary.FLAG_READ:
+        if not summaries: summaries = self._summaries
+        if not summaries: return None
+        for i in range(n+1, len(summaries)):
+            if not summaries[i].status & messageSummary.FLAG_READ:
                 return i
         return None
-    def previousUnread(self, n):
+    def previousUnread(self, n, summaries=None):
         """Return index of previous unread message before this, or None."""
-        if not self._summaries: return None
+        if not summaries: summaries = self._summaries
+        if not summaries: return None
         for i in range(n-1, -1, -1):
-            if not self._summaries[i].status & messageSummary.FLAG_READ:
+            if not summaries[i].status & messageSummary.FLAG_READ:
                 return i
         return None
 
@@ -274,6 +287,11 @@ class messageSummary(object):
         self.key = None
         self.idx = None         # Counting from 0
         self.modified = False
+        # The "client" field is available for whatever the
+        # client wants to do with it. In practice, trm main
+        # module uses it to track the message's position in
+        # the filtered view of the summaries.
+        self.client = None
     def __repr__(self):
         return "<MboxMessage \"%s\">" % self.Subject
     def getValues(self):
@@ -290,6 +308,8 @@ class messageSummary(object):
         status = c1+c2+c3
         return (status, self.Subject, self.From, self.Date,
             human_readable(self.size))
+    def getMessage(self, mbox):
+        return None
 
 
 if PY3:
@@ -320,13 +340,16 @@ else:
         parts = iso_re.split(s)
         for part in parts:
             if part:
-                parts2 = email.header.decode_header(part)
-                for part2 in parts2:
-                    if part2[1] is None:
-                        rval.append(unicode(part2[0]))
-                    else:
-                        try:
-                            rval.append(part2[0].decode(part2[1]))
-                        except:
-                            rval.append(u"???")
+                if "=?" not in part:
+                    rval.append(toU(part))
+                else:
+                    parts2 = email.header.decode_header(part)
+                    for part2 in parts2:
+                        if part2[1] is None:
+                            rval.append(unicode(part2[0]))
+                        else:
+                            try:
+                                rval.append(part2[0].decode(part2[1]))
+                            except:
+                                rval.append(u"???")
         return u''.join(rval).replace(u"\n",u"").replace(u"\r",u"")

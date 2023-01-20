@@ -426,56 +426,60 @@ class OptionScreen(ContentScreen):
         self.subwin.refresh()
         return self
 
-    def setCurrent(self, i):
+    def getRow(self): return self.current - self.offset
+
+    def getCurrent(self): return self.current
+
+    def setCurrent(self, i, row=None):
         """Set current item. Caller should call displayContent() and refresh().
         Consider calling moveTo() instead."""
-        #writeLog("setCurrent(%d), current=%d, offset=%d" % (i, self.current, self.offset))
+        #writeLog("setCurrent(%d,%s), current=%d, offset=%d" % (i, row, self.current, self.offset))
+        # What this does: If row is specified, then we set current to i and
+        # offset as required to display item i on the given row. Some restrictions
+        # apply. If row is not specified, then if we can change current without
+        # scrolling, we do that. Else, adjust offset to scroll to row 0 if scrolling
+        # up, else maxopts-1 if scrolling down.
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
         self._direction = 1 if i >= self.current else -1
         self.current = i
-        if i < self.offset:
-            self.offset = i
-        elif i >= self.offset + self.maxopts:
-            self.offset = max(0, i - self.maxopts + 2)
+        if row is not None:
+            row = min(max(0,row), self.maxopts-1)
+            self.offset = max(0, i - row)
+        else:
+            if i < self.offset:
+                self.offset = i
+            elif i >= self.offset + self.maxopts:
+                self.offset = max(0, i - self.maxopts + 2)
         #writeLog("  done, current=%d, offset=%d" % (self.current, self.offset))
         return self
-
-    def getCurrent(self): return self.current
 
     @property
     def direction(self): return self._direction
 
     def moveTo(self, i):
         """Adjust index to the given value, scrolling if needed.
+        Redisplay whatever portion needs to be redisplayed.
+        No need to call refresh() after calling this.
         Returns True if index changed, False otherwise."""
         if i < 0: i = 0
         elif i >= self.contentLen: i = self.contentLen - 1
-        if i == self.current: return False
-        self._direction = 1 if i >= self.current else -1
-        subwin = self.subwin
-        current = self.current
+        old = self.current
+        if i == old: return False
         offset = self.offset
         delta = i - offset      # new position, relative to top of screen
-        if delta >= 0 and delta < self.maxopts:
-            old = self.current
-            self.current = i
-            self.displayContent(i-offset, old-offset)
-            subwin.refresh()
-            return True
-        elif delta < 0:
-            # No point in scrolling since the option letters have to be
-            # redrawn either way.
-            self.offset = self.current = i
-            subwin.clear()
-            self.displayContent()
-            return True
+        self.setCurrent(i)
+        if self.offset == offset:
+            # Didn't scroll, just redraw old and new entries.
+            self.displayContent(i-offset, i-offset)
+            self.displayContent(old-offset, old-offset)
         else:
-            self.current = i
-            self.offset = i - self.maxopts + 1
-            subwin.clear()
+            # No point in scrolling since the option letters have to be
+            # redrawn either way. Just redraw the entire region.
+            self.subwin.clear()
             self.displayContent()
-            return True
+        self.subwin.refresh()
+        return True
 
     def moveBy(self, i):
         return self.moveTo(self.current+i)
@@ -725,22 +729,49 @@ class ColumnOptionScreen(OptionScreen):
         return self
 
 
-class passwordWindow(object):
-    """Tool to read password from user."""
-    def __init__(self, parent, region=None):
-        """Create password window as a sub-region of the parent window. If
+class simpleDiagWindow(object):
+    """Tool to read string from user."""
+    def __init__(self, parent, hgt=None, wid=None, top=None, left=None):
+        """Create dialog window as a sub-region of the parent window. If
         provided, region is (top,left, height, width). If not specified,
         region is centered in the parent window."""
-        if not region:
-            hgt, wid = parent.getmaxyx()
-            region = (hgt//2-2, 1, 4, wid-2)
-        self.win = parent.subwin(region[2],region[3], region[0], region[1])
+        h, w = parent.getmaxyx()
+        if not hgt: hgt = h//2-2
+        if not wid: wid = w-2
+        if not top: top = (h-hgt)//2
+        if not left: left = 1
+        self.win = parent.subwin(hgt,wid, top,left)
     def display(self, prompt):
+        """Display prompt, then move cursor
+        to last line in region."""
+        hgt, wid = self.win.getmaxyx()
         self.win.clear()
         self.win.border()
-        self.win.addstr(1,1, prompt)
-        self.win.move(2,1)
+        for i,s in enumerate(toUtf(prompt).split('\n')):
+            self.win.addstr(i+1,1, s)
+        self.win.move(hgt-2,1)
         self.win.refresh()
+        return self
+    def read(self):
+        writeLog("About to call getstr()")
+        try:
+            curses.echo()
+            curses.nocbreak()
+            return self.win.getstr()
+        except KeyboardInterrupt:
+            writeLog("keyboard interrupt")
+            return None
+        finally:
+            self.win.clear()
+            self.win.refresh()
+            curses.noecho()
+            curses.cbreak()
+
+
+class passwordWindow(simpleDiagWindow):
+    """Tool to read password from user."""
+    def display(self, prompt):
+        return super(passwordWindow, self).display((prompt,))
     def read(self):
         writeLog("About to call getstr()")
         try:
@@ -749,6 +780,5 @@ class passwordWindow(object):
             writeLog("keyboard interrupt")
             return None
         finally:
-            writeLog("finally")
             self.win.clear()
             self.win.refresh()

@@ -152,9 +152,7 @@ class Mbox(emailaccount.mailbox):
             return None
         # TODO: confirm the mailbox hasn't changed
         msg = self._summaries[n]
-        ifile = open(self.path, "r")
-        ifile = filerange.Filerange(ifile, msg.offset, msg.size)
-        return self.parser.parse(ifile)
+        return msg.getMessage(self)
 
     def getOverview(self, callback):
         """Get all of the Subject, From, To, and Date headers.
@@ -261,7 +259,7 @@ class Mbox(emailaccount.mailbox):
                 break
         fullhdrs = self.readHeaders(ifile)
         offset = self.flushMessage(ifile)
-        msg = emailaccount.messageSummary()
+        msg = messageSummary()
         msg.offset = offset0
         msg.size = offset - offset0
         if "From" in fullhdrs: msg.From = fullhdrs["From"]
@@ -310,3 +308,13 @@ class Mbox(emailaccount.mailbox):
     def unlockboxes(self, filelock, dotlock):
         if dotlock: dotlock.unlock()
         if filelock: filelock.unlock()
+
+
+class messageSummary(emailaccount.messageSummary):
+    def getMessage(self, mbox):
+        """Return full text of this message as an email.message object.
+        May return None for a non-available message."""
+        # TODO: confirm the mailbox hasn't changed
+        ifile = open(mbox.path, "r")
+        ifile = filerange.Filerange(ifile, self.offset, self.size)
+        return mbox.parser.parse(ifile)

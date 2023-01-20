@@ -28,6 +28,7 @@ Exit codes:
 import curses
 import errno
 import getopt
+import operator
 import os
 import re
 import signal
@@ -162,8 +163,8 @@ More on the different modes:
 
 • Message selection. Messages are displayed in the usual way. Use
   the navigation keys or type a letter to choose a message to be read.
-  The 'O' command changes the sort criteria for the messages (default
-  is by date)
+  The 'S' command changes the sort criteria for the messages (default
+  is unsorted - i.e. the order the messages happen to be stored).
 
   The 'n' and 'p' commands change the selection in the usual way,
   while 'N' and 'P' select the next or previous unread message.
@@ -631,18 +632,18 @@ MESSAGE_HELP_BOTTOM = u"""
  P             previous unread
  ^P            previous unread with same subject
 
- d             delete current email %s
- D             delete entire thread
+ d             delete/undelete current email %s
+ D             toggle display of deleted messages
  m             mark as read
  M             mark entire thread as read
  u             mark as unread
  U             mark entire thread as unread
  !             mark or unmark as important
- O             set selector order
+ S             set selector order
  R             reverse selector order
  t             toggle threaded view (TODO)
- +             expand selected thread (TODO)
- -             unexpand selected thread (TODO)
+ →  +          expand selected thread (TODO)
+ ←  -          unexpand selected thread (TODO)
  ^R            refresh mailbox - resume reading mailbox (can take a while)
  /             search, see below
 
@@ -676,7 +677,29 @@ Search:
     With no commands, switches to a view of only matching articles.
     Use "/<cr>" to clear the filter and view everything again."""
 
+SORT_HELP = """
+Choose sort order from these options:
+  s  subject
+  S  subject, reverse order
+  f  from
+  F  from, reverse order
+  t  to
+  T  To, reverse order
+  d  date, oldest first
+  D  date, newest first
+
+You can enter more than one letter, e.g. "sD" sorts messages alphabetically
+by subject, then by date.
+
+Blank line for unsorted (natural order of messages in mailbox).
+^C to cancel."""
+
 messageStart = False
+
+class ViewOptions(object):
+    def __init__(self):
+        self.sortOrder = None
+        self.showDeleted = False
 
 def MessageScreen(win, account, mbox):
     """Prompt user to select a message. When the user selects one,
@@ -687,21 +710,23 @@ def MessageScreen(win, account, mbox):
     # Display the message selection screen with whatever messages
     # we already have, then start fetching more.
 
+    viewOpts = ViewOptions()
+
     optScreen = MessageScreenSetup(win, account, mbox, [])
     optScreen.setBusy(True)
     optScreen.display()
 
     # If returning to a mailbox that's been loaded, even if only
     # partially, display it right away.
-    summaries = mbox.summaries()
+    summaries = FilterSummaries(mbox, viewOpts)
     if summaries:
         MessageScreenPrompt(optScreen, mbox)
         optScreen.setContent(summaries)
         optScreen.refresh()
 
-    MessageScreenFetch(optScreen, mbox)
+    MessageScreenFetchEmail(optScreen, mbox, viewOpts)
 
-    summaries = mbox.summaries()
+    summaries = FilterSummaries(mbox, viewOpts)
 
     writeLog("About to enter MessageScreen main loop")
     oldUpdate = None
@@ -722,7 +747,7 @@ def MessageScreen(win, account, mbox):
                     # probably isn't much more to load. So in this case,
                     # we go ahead and start loading again.
                     optScreen.setStatus("More email has arrived.").refresh()
-                    MessageScreenFetch(optScreen, mbox)
+                    MessageScreenFetchEmail(optScreen, mbox, viewOpts)
                 else:
                     # Just inform the user
                     optScreen.setStatus("More email has arrived, ^R to update.").refresh()
@@ -742,7 +767,7 @@ def MessageScreen(win, account, mbox):
             optScreen.display()
             continue
         if c == 'N':
-            idx = mbox.nextUnread(optScreen.getCurrent())
+            idx = mbox.nextUnread(optScreen.getCurrent(), summaries)
             if idx is not None:
                 optScreen.moveTo(idx)
                 MessageScreenPrompt(optScreen, mbox)
@@ -750,7 +775,7 @@ def MessageScreen(win, account, mbox):
                 optScreen.setStatus("At last unread message").refresh()
             continue
         if c == 'P':
-            idx = mbox.previousUnread(optScreen.getCurrent())
+            idx = mbox.previousUnread(optScreen.getCurrent(), summaries)
             if idx is not None:
                 optScreen.moveTo(idx)
                 MessageScreenPrompt(optScreen, mbox)
@@ -766,14 +791,44 @@ def MessageScreen(win, account, mbox):
             continue
         if c == 'd':
             idx = optScreen.getCurrent()
-            mbox.delSummary(idx)
-            optScreen.setContent(mbox.summaries())
             writeLog("delete: idx = %d, direction = %d" % (idx, optScreen.direction))
-            if optScreen.direction == -1: idx = mbox.previousMessage(idx)
-            elif idx >= mbox.nmessages(): idx -= 1
+            mbox.chFlags(summaries[idx].idx, 0, 0, messageSummary.FLAG_DELETED)
+            if not viewOpts.showDeleted:
+                del summaries[idx]
+                optScreen.setContent(summaries)
+                if optScreen.direction == -1: idx = mbox.previousMessage(idx, summaries)
+                elif idx >= len(summaries): idx -= 1
+            else:
+                optScreen.displayContent(idx - optScreen.getOffset()).refresh()
+                if optScreen.direction == -1: idx = mbox.previousMessage(idx, summaries)
+                else: idx = mbox.nextMessage(idx, summaries)
             optScreen.moveTo(idx)
             optScreen.refresh()
             MessageScreenPrompt(optScreen, mbox)
+            continue
+        if c == 'D':
+            viewOpts.showDeleted = not viewOpts.showDeleted
+            summaries = FilterSummaries(mbox, viewOpts)
+            optScreen.setContent(summaries)
+            optScreen.setStatus("%s deleted messages" % ("Show" if viewOpts.showDeleted else "Don't show"))
+            optScreen.refresh()
+            # TODO: keep the current message current
+            continue
+        if c == 'S':
+            sortorder = screens.simpleDiagWindow(win, hgt=20).display(SORT_HELP).read()
+            writeLog("New sort order %s" % sortorder)
+            # Note the current message
+            row = optScreen.getRow()
+            msg = summaries[optScreen.getCurrent()]
+            viewOpts.sortOrder = filter(lambda c: c in "sSfFtTdD", sortorder)
+            writeLog("new sort order: %s" % viewOpts.sortOrder)
+            summaries = FilterSummaries(mbox, viewOpts)
+            optScreen.setContent(summaries)
+            optScreen.setCurrent(msg.client, row)
+            optScreen.displayContent()
+            optScreen.setStatus("Sort order %s" % (viewOpts.sortOrder or "natural"))
+            optScreen.refresh()
+            # TODO: keep the current message current
             continue
         if c == 'm':
             idx = optScreen.getCurrent()
@@ -793,10 +848,10 @@ def MessageScreen(win, account, mbox):
             optScreen.displayContent(idx - optScreen.getOffset()).refresh()
             MessageScreenPrompt(optScreen, mbox)
             continue
-        # TODO: D,m,M,O,R,t,u
+        # TODO: D,m,M,S,R,t,u
 # D             delete entire thread
 # M             mark entire thread as read
-# O             set selector order
+# S             set selector order
 # R             reverse selector order
 # t             toggle threaded view (TODO)
 # +             expand selected thread (TODO)
@@ -805,7 +860,7 @@ def MessageScreen(win, account, mbox):
 # /             search, see below
 
         if ic == CTRL_R:
-            MessageScreenFetch(optScreen, mbox)
+            MessageScreenFetchEmail(optScreen, mbox, viewOpts)
             optScreen.setStatus("")
             continue
         if ic == CTRL_L:
@@ -826,7 +881,7 @@ def MessageScreen(win, account, mbox):
             newIdx = idx
             while idx is not None:
                 # Launch email viewer
-                ic = EmailScreen(win, account, mbox, idx)
+                ic = EmailScreen(win, account, mbox, summaries, idx)
                 c = chr(ic) if ic < 128 else '\0'
                 if c == 'n':
                     idx = mbox.nextMessage(idx)
@@ -866,7 +921,7 @@ def MessageScreenSetup(win, account, mbox, summaries):
             ("N Next Unread", "P Prev Unread"),
             ("PGUP < PrevPage", "PGDN > NextPage"), ("HOME ^ Top", "END  $ Bottom"),
             ("d Delete", ""), ("q Return", "x Abort")),
-        "NPdDmMuUORt")
+        "NPdDmMuUSRt")
     optScreen.resize()
     MessageScreenPrompt(optScreen, mbox)
     return optScreen
@@ -875,12 +930,11 @@ def MessageScreenPrompt(optScreen, mbox, comment=None):
     topPrompt = ["%s   %d messages" % (mbox.name, mbox.nmessages())]
     if mbox.nNew is not None: topPrompt.append(", %d new" % mbox.nNew)
     if mbox.nUnread is not None: topPrompt.append(", %d unread" % mbox.nUnread)
-    summaries = mbox.summaries()
     topPrompt.append(": %d/%d, " % (optScreen.getCurrent()+1, mbox.nmessages()))
     topPrompt.append(comment if comment else "F1 or ? for help: ")
     optScreen.setTopPrompt("".join(topPrompt))
 
-def MessageScreenFetch(optScreen, mbox):
+def MessageScreenFetchEmail(optScreen, mbox, viewOpts):
     global messageStart
     messageStart = False
 
@@ -890,13 +944,38 @@ def MessageScreenFetch(optScreen, mbox):
     # The lambda is called every half second or so with a status
     # update. TODO: run this in a background thread.
     status = mbox.getOverview(lambda mbox,count,final,pct,msg: \
-        MessageShowUpdate(optScreen, mbox, count, final, pct, msg))
+        MessageShowUpdate(optScreen, mbox, viewOpts, count, final, pct, msg))
 
     MessageScreenPrompt(optScreen, mbox)
-    optScreen.setContent(mbox.summaries())
+    optScreen.setContent(FilterSummaries(mbox, viewOpts))
     optScreen.setBusy(False).refresh()
 
-def MessageShowUpdate(optScreen, mbox, count, pct, status, msg):
+def FilterSummaries(mbox, viewOpts):
+    """Make a copy of the summaries list in this mailbox, removing
+    deleted items, and sorting."""
+    summaries = mbox.summaries()
+    for msg in summaries: msg.client = None
+    if not summaries: return summaries
+    if viewOpts.showDeleted:
+        summaries = summaries[:]
+    else:
+        summaries = filter(lambda m: not (m.status & m.FLAG_DELETED), summaries)
+
+    # TODO: multiple sort, e.g. sort by subject, then by date
+    sortOrder = viewOpts.sortOrder
+    if sortOrder:
+        if sortOrder[0] in "Ss":
+            summaries.sort(key=operator.attrgetter("Subject"), reverse=(sortOrder=='S'))
+        elif sortOrder[0] in "Ff":
+            summaries.sort(key=operator.attrgetter("From"), reverse=(sortOrder=='F'))
+        elif sortOrder[0] in "Tt":
+            summaries.sort(key=operator.attrgetter("To"), reverse=(sortOrder=='T'))
+        elif sortOrder[0] in "Dd":
+            summaries.sort(key=operator.attrgetter("Date"), reverse=(sortOrder=='T'))
+    for i,msg in enumerate(summaries): msg.client = i
+    return summaries
+
+def MessageShowUpdate(optScreen, mbox, viewOpts, count, pct, status, msg):
     # If this is called with final=False, then it's a good bet that
     # we're going to be here for a while, so time to start showing status
     global messageStart
@@ -905,7 +984,7 @@ def MessageShowUpdate(optScreen, mbox, count, pct, status, msg):
         optScreen.setStatus(msg).refresh()
     if status == mbox.STATE_READING:
         if not messageStart:
-            optScreen.setContent(mbox.summaries())
+            optScreen.setContent(FilterSummaries(mbox, viewOpts))
         MessageScreenPrompt(optScreen, mbox, "%d%%. ^C to interrupt" % pct)
         optScreen.refresh()
 
@@ -972,11 +1051,11 @@ Email message viewer:
  u             mark as unread
  U             mark entire thread as unread"""
 
-def EmailScreen(win, account, mbox, idx):
+def EmailScreen(win, account, mbox, summaries, idx):
     """Display the selected message."""
 
-    summary = mbox.getSummary(idx)
-    msg = mbox.getMessage(idx)
+    summary = summaries[idx]
+    msg = summary.getMessage(mbox)
     # TODO: handle not found
     # If multipart, search for a text/plain part
     longHeaders = False
@@ -1034,7 +1113,7 @@ def EmailScreen(win, account, mbox, idx):
         if c in "npNPdD":
             mbox.chFlags(idx, messageSummary.FLAG_READ, 0)
             return ic
-        # TODO: m,M,O,R,t,u
+        # TODO: m,M,S,R,t,u
         if optScreen.commonKeys(ic):
             optScreen.refresh()
             continue
