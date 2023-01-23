@@ -25,13 +25,15 @@ if PY3:
         return s
     def toUtf(s):
         return s
-    def unicode(s):
-        return s
+    unicode = str
+    basestring = str
 else:
     def fromUtf(s):
         return s.decode("utf8", "replace")
     def toUtf(s):
-        return s.encode("utf8", "replace")
+        # Only unicode (not str) needs encoding
+        if isinstance(s, unicode): return s.encode("utf8", "replace")
+        else: return s
 
 
 class ShortMessage(object):
@@ -293,7 +295,6 @@ class ContentScreen(object):
             self.pageEnd().refresh()
             return True
         if c in (curses.KEY_RESIZE, CTRL_L):
-            writeLog("Executing resize")
             self.resize()
             self.display()
             return True
@@ -753,7 +754,6 @@ class simpleDiagWindow(object):
         self.win.refresh()
         return self
     def read(self):
-        writeLog("About to call getstr()")
         try:
             curses.echo()
             curses.nocbreak()
@@ -773,7 +773,6 @@ class passwordWindow(simpleDiagWindow):
     def display(self, prompt):
         return super(passwordWindow, self).display((prompt,))
     def read(self):
-        writeLog("About to call getstr()")
         try:
             return self.win.getstr()
         except KeyboardInterrupt:

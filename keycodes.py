@@ -9,4 +9,4 @@ CTRL_N = CTRL('N')
 CTRL_P = CTRL('P')
 CTRL_R = CTRL('R')
 CTRL_Y = CTRL('Y')
-
+KEY_TAB = CTRL('I')
