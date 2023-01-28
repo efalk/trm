@@ -296,7 +296,7 @@ class messageSummary(object):
         # the filtered view of the summaries.
         self.client = None
     def __repr__(self):
-        return "<MboxMessage \"%s\">" % self.Subject
+        return "<MboxMessage %s \"%s\">" % (self.client, self.Subject)
     def getValues(self):
         """Return a (status, subject, from, date, size) tuple."""
         # Fit the status into three letters

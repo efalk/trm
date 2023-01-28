@@ -29,6 +29,22 @@ KEY_TAB = u'\011'
 SCROLL_THRESH = 5
 
 
+#PY3 = sys.version_info[0] >= 3
+#if PY3:
+#    def fromUtf(s):
+#        return s
+#    def toUtf(s):
+#        return s
+#    unicode = str
+#    basestring = str
+#else:
+#    def fromUtf(s):
+#        return s.decode("utf8", "replace")
+#    def toUtf(s):
+#        # Only unicode (not str) needs encoding
+#        if isinstance(s, unicode): return s.encode("utf8", "replace")
+#        else: return s
+
 PY3 = sys.version_info[0] >= 3
 if PY3:
     def fromUtf(s):
@@ -46,10 +62,24 @@ else:
         else: return s
 
 
+
 class Form(object):
     """Display a form for the user to fill out. Takes a list
     of Widget subclasses, displays them, and returns when one
-    of the callbacks signals it."""
+    of the callbacks signals it. This is the framework that holds
+    all of the widgets.
+
+    Note: in these notes, "list" can usually mean anything that is
+    iterable and indexible, e.g. a tuple. "string" can usually mean
+    anything that returns a reasonable value for unicode() or str().
+
+    Method "scrollTo()" sets the scroll amount of a widget and scrolls
+    or redisplays as needed. "moveTo()" sets the currently-selected
+    item in a list and scrolls if necessary to make it visible.
+    Methods "setScroll()" and "setCurrent()" set the scroll and
+    the currently-selected value, but take no other actions, so you'll
+    want to call "redraw()" to completely redraw the widget.
+    """
 
     class Widget(object):
         def __init__(self, form, hgt,wid, row,col):
@@ -86,21 +116,21 @@ class Form(object):
             self.ccol = col if col >= 0 else fwid + col
             self.chgt = hgt if hgt >= 1 else fhgt - self.crow + hgt
             self.cwid = wid if wid >= 1 else fwid - self.ccol + wid
-            writeLog("_resizeCompute(%d,%d,%d,%d), %d,%d => %d,%d, %d,%d" % \
-                (hgt,wid, row,col, fhgt,fwid, self.chgt, self.cwid, self.crow, self.ccol))
-            if self.crow + self.chgt >= fhgt: self.chgt = fhgt - self.crow - 1
-            if self.ccol + self.cwid >= fwid: self.cwid = fwid - self.ccol - 1
+            if self.crow + self.chgt > fhgt: self.chgt = fhgt - self.crow
+            if self.ccol + self.cwid > fwid: self.cwid = fwid - self.ccol
             return self
         def resize(self):
             """Handle size changes. Recompute whatever needs
             computing. Allocate subwindow."""
             self._resizeCompute(self.hgt, self.wid, self.row, self.col)
             self.win = self.form.win.derwin(self.chgt,self.cwid, self.crow,self.ccol)
+            self.win.clear()
             return self
         def setSize(self, hgt,wid, row,col):
             """Set the size and/or position of the widget. Set any value to
             None to leave it unchanged. Implicitly calls resize(). Caller should
             call redraw() and refresh() at some point."""
+            writeLog("%s.setSize(%s,%s, %s,%s)" % (self, hgt,wid, row,col))
             if hgt is not None: self.hgt = hgt
             if wid is not None: self.wid = wid
             if row is not None: self.row = row
@@ -114,6 +144,8 @@ class Form(object):
             return self
         def refresh(self):
             self.win.refresh()
+            if not self.focused:
+                self.form._replaceCursor()
             return self
         def enable(self, enabled=True):
             self.enabled = enabled
@@ -131,44 +163,47 @@ class Form(object):
             return self
         def placeCursor(self, row,col, win=None):
             """Place the cursor at the specific position."""
-            # You'd think that self.win.move() would do the trick, but
-            # apparently not.
             if not win: win = self.win
-            y,x = win.getbegyx()
-            row += y
-            col += x
-            self.form.stdscr.move(row,col)
-        def keystroke(self, key):
-            """Return False if not interested in this key. Key may
-            be an int keycode, or unicode character"""
-            return False
+            win.move(row,col)
+            return self
+        def _replaceCursor(self):
+            """Put cursor back where it belongs. Does nothing for widgets
+            that don't use the cursor."""
+            return self
+        def handleKey(self, key):
+            """Return None if not interested in this key. May return
+            anything else if the key was used. Value may be meaningful
+            to the application.  If the widget uses a callback, the
+            value is likely to be the same one passed to the callback.
+            Key may be an int keycode, or unicode character"""
+            return None
 
     class Label(Widget):
         def __init__(self, form, hgt,wid, row,col, label):
+            self.label = label
             super(Form.Label,self).__init__(form, hgt,wid, row,col)
-            self.label = toUtf(label)
         def redraw(self):
             if self.chgt <= 0 or self.cwid <= 0: return self
-            cursor = self.form.stdscr.getyx()
             win = self.win
-            win.clear()
             # TODO: truncate line length correctly
-            win.addnstr(0,0, self.label, (self.wid-1)*self.hgt)
-            self.form.stdscr.move(*cursor)
+            win.addnstr(0,0, toUtf(self.label), (self.cwid-1)*self.chgt)
+            win.clrtoeol()
             return self
-        def set(self, s):
+        def set(self, label):
             """Set contents of label. Caller should call refresh()"""
-            self.label = toUtf(s)
+            self.label = label
             self.redraw()
             return self
         def __repr__(self):
             return '<Label "%s">' % toUtf(self.label)
 
     class Text(Widget):
+        """Present a one-line text field that the user can type into."""
         def __init__(self, form, hgt,wid, row,col, default=u""):
             self.buffer = list(default)
             super(Form.Text,self).__init__(form, hgt,wid, row,col)
             self.scroll = 0
+            self.callback = self.client = None
         def resize(self):
             self._resizeCompute(self.hgt, self.wid, self.row, self.col)
             hgt = self.chgt
@@ -188,73 +223,93 @@ class Form(object):
             self.curspos = len(self.buffer)
             self.redraw()
             return self
+        def get(self):
+            """Return current string value."""
+            return u''.join(self.buffer)
+        def setCallback(self, callback, client):
+            self.callback = callback
+            self.client = client
+            return self
         def redraw(self):
             # If height is 3 or more, add a border
-            cursor = self.form.stdscr.getyx()
             if self.hgt >= 3:
                 self.win.border()
             self.__draw()
             if self.focused:
-                self.__placeCursor()
+                self._replaceCursor()
             else:
-                self.form.stdscr.move(*cursor)
+                self.form._replaceCursor()
             return self
         def canFocus(self):
             return True
         def takeFocus(self):
             self.focused = True
             curses.curs_set(1)
-            self.__placeCursor()
+            self._replaceCursor()
             return self
         def loseFocus(self):
             self.focused = False
             return self
-        def keystroke(self, k):
-            """I wish I could use getstr() for this, but I need to
-            end input on characters other than newline. Tab, backtab,
-            arrow keys, etc. all end input. Basically, only printing
-            characters are accepted. Also, under Python 2, there's no
-            way to receive unicode characters other than to decode them
-            manually."""
+        def handleKey(self, key):
+            """Edit text according to the key. Return None if the
+            key was not used, else returns the key."""
+            # I wish I could use getstr() for this, but I need to
+            # end input on characters other than newline. Tab, backtab,
+            # arrow keys, etc. all end input. Basically, only printing
+            # characters are accepted. Also, under Python 2, there's no
+            # way to receive unicode characters other than to decode them
+            # manually.
             win = self.textwin
-            if isinstance(k, int):      # Keycode
-                return False            # At present, we're not interested in any of these
+            if isinstance(key, int):      # Keycode
+                return None            # At present, we're not interested in any of these
             else:
-                writeLog("character %#o" % ord(k))
-                if printable(k):
-                    writeLog("printable: %c" % k)
+                #writeLog("character %#o" % ord(key))
+                if printable(key):
+                    #writeLog("printable: %c" % key)
                     wid = self.textwid
-                    self.buffer.append(k)
+                    self.buffer.append(key)
                     l = len(self.buffer)
                     if l > wid-1: self.scroll = l - wid + 1
                     self.__draw()
-                    self.__placeCursor()
+                    self._replaceCursor()
                     win.refresh()
-                    return True
-                if k == u'\177':
-                    writeLog("del")
+                    if self.callback:
+                        self.callback(self, self.get(), self.client)
+                    return key
+                if key == u'\177':
+                    #writeLog("del")
                     if self.buffer:
                         wid = self.textwid
                         del self.buffer[-1]
                         l = len(self.buffer)
                         if l >= wid-1: self.scroll = l - wid + 1
-                        self.textwin.clear()
+                        win.move(0,0)
+                        win.clrtoeol()
+                        #self.textwin.clear()
                         self.__draw()
                         win.refresh()
-                    return True
-                if k == "\25":
-                    writeLog("^U")
+                        if self.callback:
+                            self.callback(self, self.get(), self.client)
+                    return key
+                if key == "\25":
+                    #writeLog("^U")
                     self.buffer = []
                     self.scroll = 0
-                    self.textwin.clear()
+                    #self.textwin.clear()
+                    win.move(0,0)
+                    win.clrtoeol()
                     self.__draw()
                     win.refresh()
-                    return True
-            return False
-        def __placeCursor(self):
+                    if self.callback:
+                        self.callback(self, self.get(), self.client)
+                    return key
+            return None
+        def _replaceCursor(self):
             """Put the cursor where it belongs."""
             col = len(self.buffer) - self.scroll
-            self.placeCursor(0, col, self.textwin)
+            self.textwin.move(0,col)
+            self.textwin.refresh()
+            return self
         def __draw(self):
             b = u''.join(self.buffer[self.scroll:])
             wid = self.textwid - 1
@@ -263,143 +318,6 @@ class Form(object):
             self.textwin.addnstr(0,0, toUtf(b), wid)
         def __repr__(self):
             return '<Text "%s">' % toUtf(u"".join(self.buffer))
-
-    class Pager(Widget):
-        """Display text in a window. Accepts various keys that
-        cause it to scroll."""
-        def __init__(self, form, hgt,wid, row,col, content):
-            self.content = content
-            self.scroll = 0
-            self.formatted = None
-            self.contentLen = 0
-            self.offset = 0
-            super(Form.Pager,self).__init__(form, hgt,wid, row,col)
-        def resize(self):
-            self._resizeCompute(self.hgt, self.wid, self.row, self.col)
-            self.win = self.form.win.derwin(self.chgt,self.cwid, self.crow,self.ccol)
-            self.win.scrollok(True)
-            self.__reformat()
-            return self
-        def __reformat(self):
-            wrapper = textwrap.TextWrapper(width=self.cwid-1)
-            self.formatted = []
-            for line in self.content.split('\n'):
-                self.formatted.extend(wrapper.wrap(line) if line else [''])
-            self.contentLen = len(self.formatted)
-        def set(self, text):
-            """Replace text. Caller should call refresh() after."""
-            self.content = text
-            self.__reformat()
-            if self.offset >= self.contentLen:
-                self.offset = self.contentLen - 2
-            self.win.clear()
-            self.displayContent()
-            return self
-        def redraw(self):
-            self.displayContent()
-        def displayContent(self, line0=0, line1=None):
-            """Display the content within this range of lines."""
-            if line1 is None: line1 = self.chgt - 1
-            offset = self.offset
-            win = self.win
-            for i in xrange(line0, line1+1):
-                if i+offset >= self.contentLen:
-                    break
-                win.addstr(i,0, toUtf(self.formatted[offset+i]))
-            win.refresh()
-            return self
-        def canFocus(self):
-            return True
-        def takeFocus(self):
-            self.focused = True
-            curses.curs_set(0)
-            return self
-
-        def getOffset(self):
-            """Return current scroll offset"""
-            return self.offset
-
-        def scrollTo(self, i):
-            """Adjust offset to the given value, scrolling if needed."""
-            if i < 0 or i > self.contentLen - self.chgt + 1 or i == self.offset:
-                return self
-            win = self.win
-            offset = self.offset
-            delta = i - offset
-            # Less than SCROLL_THRESH lines change, scroll and just fill in the gaps
-            if i < offset and i >= offset-SCROLL_THRESH:
-                # scroll down
-                win.scroll(delta)
-                self.offset = i
-                self.displayContent(0, -delta-1)
-            elif i > offset and i < offset+SCROLL_THRESH:
-                # scroll up
-                writeLog("About to call win.scroll(%d)" % delta)
-                win.scroll(delta)
-                self.offset = i
-                self.displayContent(self.chgt - delta, self.chgt-1)
-            else:
-                # Beyond that, complete refresh
-                self.offset = i
-                self.win.clear()
-                self.displayContent()
-            return self
-
-        def scrollBy(self, i):
-            return self.scrollTo(self.offset+i)
-
-        def pageUp(self):
-            if self.offset <= 0:
-                return self
-            self.offset -= self.chgt - 1
-            if self.offset < 0: self.offset = 0
-            self.win.clear()
-            self.displayContent()
-            return self
-
-        def pageDown(self):
-            offset = self.offset
-            offset += self.chgt - 1
-            if offset >= self.contentLen:
-                return self
-            self.offset = offset
-            self.win.clear()
-            self.displayContent()
-            return self
-
-        def pageHome(self):
-            return self.scrollTo(0)
-
-        def pageEnd(self):
-            return self.scrollTo(self.contentLen - self.chgt + 1)
-
-        def keystroke(self, key):
-            """Handle one character. Scroll if that's what's
-            called for, return False otherwise."""
-            win = self.win
-            if key in (u'\n', u'j', CTRL_N, CTRL_E, curses.KEY_DOWN):
-                self.scrollBy(1).refresh()
-                return True
-            if key in (u'k', CTRL_P, CTRL_Y, curses.KEY_UP):
-                self.scrollBy(-1).refresh()
-                return True
-            if key in ('>', CTRL_F, curses.KEY_NPAGE, u' '):
-                self.pageDown().refresh()
-                return True
-            if key in ('<', CTRL_B, curses.KEY_PPAGE):
-                self.pageUp().refresh()
-                return True
-            if key in ('^', curses.KEY_HOME):
-                self.pageHome().refresh()
-                return True
-            if key in ('$', curses.KEY_END):
-                self.pageEnd().refresh()
-                return True
-            if key in (curses.KEY_RESIZE, CTRL_L):
-                self.resize()
-                self.display()
-                return True
-            return False    # didn't use this key
 
     class Button(Widget):
         """Button widget. Height should be 3 or more. Set width to 0
@@ -455,16 +373,17 @@ class Form(object):
             self.focused = False
             self.redraw().refresh()
             return self
-        def keystroke(self, k):
-            """k is either a unicode character, or an int keycode."""
-            if isinstance(k, int):
-                return False            # At present, we're not interested in any of these
+        def handleKey(self, key):
+            """key is either a unicode character, or an int keycode.
+            Return True if pressed, else None"""
+            if isinstance(key, int):
+                return None            # At present, we're not interested in any of these
             else:
-                if k == ' ':
+                if key == ' ':
                     if self.enabled:
                         self.activate()
                     return True
-            return False
+            return None
         def __repr__(self):
             return '<Button "%s">' % toUtf(self.label)
 
@@ -506,16 +425,17 @@ class Form(object):
             self.activated = False
             self.redraw().refresh()
             return self
-        def keystroke(self, k):
-            """k is either a unicode character, or an int keycode."""
-            if isinstance(k, int):
-                return False            # At present, we're not interested in any of these
+        def handleKey(self, key):
+            """key is either a unicode character, or an int keycode. Return
+            new state if pressed, else None"""
+            if isinstance(key, int):
+                return None            # At present, we're not interested in any of these
             else:
-                if k == ' ':
+                if key == ' ':
                     if self.enabled:
                         self.activate(not self.checked)
-                    return True
-            return False
+                    return self.checked
+            return None
         def __repr__(self):
             return '<Button "%s">' % toUtf(self.label)
 
@@ -534,68 +454,45 @@ class Form(object):
         """
         def __init__(self, form, hgt,wid, row,col, shortHelp):
             self.shortHelp = shortHelp
+            writeLog("ShortHelp(), len(help) = %d" % len(shortHelp))
             super(Form.ShortHelp,self).__init__(form, hgt,wid, row,col)
-        def resize(self):
-            """Compute the sizes and positions of the content. No need
-            for a subwindow."""
-            fhgt = self.form.hgt
-            fwid = self.form.wid
-            hgt = self.hgt
-            wid = self.wid
-            row = self.row
-            col = self.col
-            if self.form.border:
-                if hgt is None: hgt = len(self.shortHelp[0])
-                if row is None: row = fhgt - hgt - 1
-                if col is None: col = 1
-                if wid is None: wid = fwid - col - 1
-            else:
-                if hgt is None: hgt = len(self.shortHelp[0])
-                if row is None: row = fhgt - hgt
-                if col is None: col = 0
-                if wid is None: wid = fwid - col
-            self._resizeCompute(hgt,wid, row,col)
-            return self
         def redraw(self):
             """Display the short help at the bottom of the screen. Items
             that won't fit are discarded, so put the least important items
             at the end."""
-            shortHelp = self.shortHelp
+            #writeLog("This is ShortHelp.redraw() %dx%d %d,%d" % \
+            #    (self.chgt, self.cwid, self.crow, self.ccol))
+            shortHelp = zip(*self.shortHelp)
             # Compute column widths
             wid = self.cwid
             colwids = map(max, [map(len, x) for x in shortHelp])
             colwid = sum(colwids)
-            pad = max((wid - colwid) // (len(colwids)-1), 2) if len(colwids) >= 2 else 0
+            pad = max((wid - colwid) // (len(colwids)-1), 2)-1 if len(colwids) >= 2 else 0
             x = 0
-            win = self.form.win
+            win = self.win
             if not self.enabled:
                 win.attrset(curses.A_INVIS)
             for i,col in enumerate(shortHelp):
                 cw = colwids[i]
-                if x + cw > wid:
+                if x + cw >= wid:
                     break
-                y = self.crow
+                y = 0
                 for s in col:
-                    win.addstr(y,x+self.ccol, s)
+                    win.addstr(y,x, toUtf(s))
                     y += 1
                 x += cw + pad
             if not self.enabled:
                 win.attrset(curses.A_NORMAL)
             return self
-        def refresh(self):
-            self.form.win.refresh()
-            return self
 
-    class ScrollWindow(Widget):
+    class OutputWindow(Widget):
         """Create a subwindow to which text can be sent. Also acts
         as a file-like object."""
         def __init__(self, form, hgt,wid, row,col, border=True):
             self.border = border
-            super(Form.ScrollWindow,self).__init__(form, hgt,wid, row,col)
+            super(Form.OutputWindow,self).__init__(form, hgt,wid, row,col)
         def resize(self):
-            writeLog("ScrollWindow calls _resizeCompute()")
             self._resizeCompute(self.hgt, self.wid, self.row, self.col)
-            writeLog("call derwin(%d,%d, %d,%d)" % (self.chgt,self.cwid, self.crow,self.ccol))
             self.win = self.form.win.derwin(self.chgt,self.cwid, self.crow,self.ccol)
             if self.border:
                 self.subwin = self.win.derwin(self.chgt-2,self.cwid-2, 1,1)
@@ -604,14 +501,8 @@ class Form(object):
             self.subwin.scrollok(True)
             return self
         def redraw(self):
-            """Display the short help at the bottom of the screen. Items
-            that won't fit are discarded, so put the least important items
-            at the end."""
             if self.border:
                 self.win.border()
-            return self
-        def refresh(self):
-            self.subwin.refresh()
             return self
         def clear(self):
             """Clear the subwindow, caller should call refresh()"""
@@ -623,10 +514,592 @@ class Form(object):
             self.subwin.refresh()
             return self
 
+    class Pager(Widget):
+	"""Basic class that accepts a list of strings (or anything
+	that can be treated as a string) and displays them one per
+	line. The user can use the following keys to scroll through
+	the list:
+            \n j ^N ^E KEY_DOWN  -  scroll down one line
+            k ^P ^Y KEY_UP - scroll up one line
+            > ^F KEY_NPAGE - scroll down one page
+            < ^B KEY_PPAGE - scroll up one page
+            ^ KEY_HOME - scroll to top
+            $ KEY_END - scroll to bottom
 
-    def __init__(self, stdscr, win, border=True):
+        All other keys are ignored and handleKey() returns None. Otherwise,
+        returns the scroll amount (index of first displayed item in list.
+
+        Items that will not fit in the width of the widget are truncated."""
+        def __init__(self, form, hgt,wid, row,col, content):
+            self.content = content
+            self.contentLen = len(content)
+            self.scroll = 0     # Amount window is scrolled
+            self._direction = 1  # track the direction user is moving
+            super(Form.Pager,self).__init__(form, hgt,wid, row,col)
+        def resize(self):
+            self._resizeCompute(self.hgt, self.wid, self.row, self.col)
+            self.win = self.form.win.derwin(self.chgt,self.cwid, self.crow,self.ccol)
+            self.win.scrollok(True)
+            return self
+        def set(self, content):
+            """Replace content. Caller should call refresh() after."""
+            self.content = content
+            self.contentLen = len(content)
+            if self.scroll >= self.contentLen:
+                self.scroll = self.contentLen - 2
+            self.win.clear()
+            self.displayContent()
+            return self
+        def redraw(self):
+            self.win.clear()
+            self.displayContent()
+            return self
+        def displayContent(self, line0=0, line1=None):
+            """Display the content within this range of lines."""
+            if line1 is None: line1 = self.chgt - 1
+            scroll = self.scroll
+            win = self.win
+            for i in xrange(line0, line1+1):
+                if i+scroll >= self.contentLen:
+                    break
+                s = unicode(self.content[scroll+i])
+                win.addstr(i,0, toUtf(s))
+            return self
+        def canFocus(self):
+            return True
+        def takeFocus(self):
+            self.focused = True
+            curses.curs_set(0)
+            return self
+
+        def getScroll(self):
+            """Return the current scroll amount."""
+            return self.scroll
+
+        def getDirection(self):
+            """Return the direction the user last moved the highlight."""
+            return self._direction
+
+        def scrollTo(self, i):
+            """Adjust scroll to the given value."""
+            if i < 0 or i >= self.contentLen or i == self.scroll:
+                return self
+            win = self.win
+            scroll = self.scroll
+            delta = i - scroll
+            # Less than SCROLL_THRESH lines change, scroll and just fill in the gaps
+            if i < scroll and i >= scroll-SCROLL_THRESH:
+                # scroll down
+                win.scroll(delta)
+                self.scroll = i
+                self.displayContent(0, -delta-1)
+            elif i > scroll and i < scroll+SCROLL_THRESH:
+                # scroll up
+                win.scroll(delta)
+                self.scroll = i
+                self.displayContent(self.chgt - delta, self.chgt-1)
+            else:
+                # Beyond that, complete refresh
+                self.scroll = i
+                self.win.clear()
+                self.displayContent()
+            return self
+
+        def scrollBy(self, i):
+            return self.scrollTo(self.scroll+i)
+
+        def pageUp(self):
+            if self.scroll <= 0:
+                return self
+            self.scroll -= self.chgt - 1
+            if self.scroll < 0: self.scroll = 0
+            self.win.clear()
+            self.displayContent()
+            return self
+
+        def pageDown(self):
+            scroll = self.scroll
+            scroll += self.chgt - 1
+            if scroll >= self.contentLen:
+                return self
+            self.scroll = scroll
+            self.win.clear()
+            self.displayContent()
+            return self
+
+        def pageHome(self):
+            return self.scrollTo(0)
+
+        def pageEnd(self):
+            return self.scrollTo(self.contentLen - self.chgt + 1)
+
+        def handleKey(self, key):
+            """Handle one character. Scroll if that's what's
+            called for, return new scroll value if the key
+            was used, else return None."""
+            #writeLog("Pager.handleKey(%s)" % key)
+            win = self.win
+            if key in (u'\n', u'n', u'j', CTRL_N, CTRL_E, curses.KEY_DOWN):
+                self.scrollBy(1).refresh()
+                self._direction = 1
+                return self.scroll
+            if key in (u'p', u'k', CTRL_P, CTRL_Y, curses.KEY_UP):
+                self.scrollBy(-1).refresh()
+                self._direction = -1
+                return self.scroll
+            if key in ('>', CTRL_F, curses.KEY_NPAGE, u' '):
+                self.pageDown().refresh()
+                self._direction = 1
+                return self.scroll
+            if key in ('<', CTRL_B, curses.KEY_PPAGE):
+                self.pageUp().refresh()
+                self._direction = -1
+                return self.scroll
+            if key in ('^', curses.KEY_HOME):
+                self.pageHome().refresh()
+                self._direction = -1
+                return self.scroll
+            if key in ('$', curses.KEY_END):
+                self.pageEnd().refresh()
+                self._direction = 1
+                return self.scroll
+            return None    # didn't use this key
+
+    class TextPager(Pager):
+        """Similar to Pager except that long lines are wrapped as needed.
+        If the content is a string instead of a list, it is broken on newlines.
+        """
+        def __init__(self, form, hgt,wid, row,col, text):
+            self.rawtext = text
+            writeLog("New TextPager()")
+            super(Form.TextPager,self).__init__(form, hgt,wid, row,col, [])
+            self.__reformat()
+        def resize(self):
+            super(Form.TextPager,self).resize()
+            self.__reformat()
+            return self
+        def __reformat(self):
+            wrapper = textwrap.TextWrapper(width=self.cwid-1)
+            text = self.rawtext
+            if isinstance(text, basestring):
+                text = text.split('\n')
+            self.content = []
+            for line in text:
+                self.content.extend(wrapper.wrap(line) if line else [''])
+            self.contentLen = len(self.content)
+        def set(self, text):
+            """Replace text. Caller should call refresh() after."""
+            self.rawtext = text
+            self.__reformat()
+            super(Form.TextPager,self).set(self.content)
+            return self
+
+    class List(Pager):
+        """Like Pager, but adds the concept of a "current" item. Widget generally
+        tries to keep that item on the screen. That item can be selected by the
+        user by moving focus to it and hitting enter."""
+        def __init__(self, form, hgt,wid, row,col, options):
+            super(Form.List,self).__init__(form, hgt,wid, row,col, options)
+            self.current = 0
+            self.maxopts = 0    # max items that can be displayed
+        def resize(self):
+            super(Form.List,self).resize()
+            self.maxopts = self.chgt
+            return self
+        def displayContent(self, line0=0, line1=None):
+            """Display the options"""
+            if self.contentLen <= 0: return self
+            if line1 is None:
+                line1 = self.maxopts - 1
+            elif line1 < line0:
+                line0,line1 = line1,line0
+            writeLog("List.displayContent(%d,%d)" % (line0, line1))
+            win = self.win
+            options = self.content
+            scroll = self.scroll
+            current = self.current
+            wid = self.cwid
+            #writeLog("options: " + str(options))
+            limit = min(line1+1, self.contentLen - scroll)
+            for i in xrange(line0, limit):
+                if i+scroll == current:
+                    win.attrset(curses.A_BOLD)
+                win.addstr(i,0, '>' if i+scroll == current else ' ')
+                win.addstr(i,1, toUtf(str(options[i+scroll])[:wid-2]))
+                if i+scroll == current:
+                    win.attrset(curses.A_NORMAL)
+            return self
+        def getCurrent(self):
+            """Get the index of the currently-selected item, or None."""
+            return self.current if self.content else None
+        def setCurrent(self, i, row=None):
+            """Change the current item. Caller should call redraw() and refresh() after.
+            This function simply sets the index of the current item. A full redraw
+            is normally required. If you want to have the widget update itself visually
+            and scroll as needed, then call moveTo() instead."""
+            if row is not None:
+                row = max(0, min(row, self.maxopts))
+                self.scroll = max(0, i - row)
+            else:
+                # adjust the scroll only as needed
+                if i < self.scroll:
+                    self.scroll = i
+                elif i >= self.scroll + self.maxopts:
+                    self.scroll = i - self.maxopts + 1
+            self.current = i
+            return self
+        def moveTo(self, i):
+            """Change the current item, scroll as needed to keep it in the
+            window."""
+            if i is None: return self           # Do nothing
+            current = self.current
+            #writeLog("moveTo(%d)" % i)
+            i = max(min(i, self.contentLen - 1), 0)
+            #writeLog(" new i = %d" % i)
+            #writeLog("List.moveTo(%d), current=%d, scroll=%d" % (i,current,self.scroll))
+            if i == current:
+                #writeLog(" i==current, do nothing")
+                return self
+            win = self.win
+            scroll = self.scroll
+            self.current = i
+            self.displayContent(current-scroll, current-scroll)
+            if i >= scroll and i < scroll + self.maxopts:
+                # Didn't scroll, just redraw old and new entries
+                #writeLog(" list didn't scroll, redraw lines %d, %d" % (current-scroll, i-scroll))
+                self.displayContent(i-scroll, i-scroll)
+            elif i < scroll:
+                # Need to scroll up
+                #writeLog(" list undraw line %d, scroll up scrollTo(%d)" % (current-scroll, i))
+                self.scrollTo(i)
+            else:
+                # Need to scroll down
+                #writeLog(" list undraw line %d, scroll down scrollTo(%d)" % (current-scroll, i-self.maxopts+1))
+                self.scrollTo(i-self.maxopts+1)
+            return self
+        # Scrolling rules:
+        # * Move up or down one line, and the focused item
+        #   moves one line, scrolling only enough to keep it
+        #   on the screen.
+        # * Page up or down one page, same as for Pager, and the
+        #   current item is then adjusted if needed to keep it
+        #   on the screen.
+        # * Home or End and the focused item moves to start or
+        #   end, and the view scrolls only enough to keep it on
+        #   the screen.
+        def moveBy(self, i):
+            #writeLog("List.moveby(%d), call moveTo(%d)" % (i, self.current+i))
+            return self.moveTo(self.current+i)
+        def pageUp(self):
+            #writeLog("List.pageUp(), current=%d, scroll=%d, call super.pageUp()" % \
+            #    (self.current, self.scroll))
+            super(Form.List,self).pageUp()
+            self.current = self.scroll + self.maxopts - 1
+            #writeLog(" set current = %d" % self.current)
+            self.displayContent(self.current-self.scroll,self.current-self.scroll)
+            return self
+        def pageDown(self):
+            #writeLog("List.pageDown(), current=%d, scroll=%d, call super.pageDown()" % \
+            #    (self.current, self.scroll))
+            super(Form.List,self).pageDown()
+            self.current = self.scroll
+            #writeLog(" set current = %d" % self.current)
+            self.displayContent(self.current-self.scroll,self.current-self.scroll)
+            return self
+        def moveHome(self):
+            #writeLog("List.moveHome(), current=%d, scroll=%d, call moveTo(0)" % (self.current, self.scroll))
+            return self.moveTo(0)
+        def moveEnd(self):
+            return self.moveTo(self.contentLen-1)
+        def handleKey(self, key):
+            """Handle one keystroke. Scroll if that's what's
+            called for, return new scroll value if the key
+            was used, else return None."""
+            #writeLog("List.handleKey(%s)" % keystr(key))
+            if key in (u"\n", u"\r"):
+                return self.current
+            if key in (u'j', u'n', CTRL_N, CTRL_E, curses.KEY_DOWN):
+                self.moveBy(1).refresh()
+                return True
+            if key in (u'k', u'p', CTRL_P, CTRL_Y, curses.KEY_UP):
+                writeLog("key up, call moveby(-1)")
+                self.moveBy(-1).refresh()
+                return True
+            if key in ('>', CTRL_F, curses.KEY_NPAGE, u' '):
+                self.pageDown().refresh()
+                return True
+            if key in ('<', CTRL_B, curses.KEY_PPAGE):
+                self.pageUp().refresh()
+                return True
+            if key in ('^', curses.KEY_HOME):
+                self.moveHome().refresh()
+                return True
+            if key in ('$', curses.KEY_END):
+                self.moveEnd().refresh()
+                return True
+            return None    # didn't use this key
+
+    class OptionsList(List):
+        """Same as List, but items are indexed with a letter for quick
+        selection. Caller provides a list of letters which are not available in
+        'cmds'"""
+        optKeys = "abcdefghijklmorstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        def __init__(self, form, hgt,wid, row,col, options, cmds):
+            # String of commands. Commands "? \nnp<>^$q" are implied.
+            self.cmds = cmds = cmds + "? \nnp<>^$q"
+            self.optKeys = "".join([c for c in self.optKeys if c not in cmds])
+            super(Form.OptionsList,self).__init__(form, hgt,wid, row,col, options)
+        def resize(self):
+            super(Form.OptionsList,self).resize()
+            self.maxopts = min(len(self.optKeys), self.chgt)
+            return self
+        def displayContent(self, line0=0, line1=None):
+            """Display the options"""
+            if self.contentLen <= 0: return self
+            if line1 is None:
+                line1 = self.chgt - 1
+            elif line1 < line0:
+                line0,line1 = line1,line0
+            win = self.win
+            options = self.content
+            scroll = self.scroll
+            current = self.current
+            optKeys = self.optKeys
+            wid = self.cwid
+            #writeLog("options: " + str(options))
+            # Upper limit is the least of line1, options, maxopts
+            limit = min(line1+1, self.contentLen - scroll, self.maxopts)
+            for i in xrange(line0, limit):
+                if i+scroll == self.current:
+                    win.attrset(curses.A_BOLD)
+                win.addstr(i,0, '>' if i+scroll == current else ' ')
+                win.addstr(i,1, optKeys[i])
+                win.addstr(i,3, toUtf(str(options[i+scroll])[:wid-4]))
+                if i+scroll == current:
+                    win.attrset(curses.A_NORMAL)
+            return self
+        def moveTo(self, i):
+            """Change the current item, scroll as needed to keep it in the
+            window. Caller should call refresh() after."""
+            if i is None: return self           # Do nothing
+            #writeLog("Options.moveto(%d)" % i)
+            current = self.current
+            i = max(min(i, self.contentLen - 1), 0)
+            #writeLog(" new i = %d" % i)
+            if i == current:
+                return self
+            win = self.win
+            scroll = self.scroll
+            self.current = i
+            if i >= scroll and i < scroll + self.chgt:
+                # Didn't scroll, just redraw old and new entries
+                self.displayContent(current-scroll, current-scroll)
+                self.displayContent(i-scroll, i-scroll)
+            elif i < current:
+                # No point in actually scrolling, the entire thing needs
+                # a redraw.
+                self.scroll = i
+                self.win.clear()
+                self.displayContent()
+            else:
+                self.scroll = i - self.chgt + 1
+                self.win.clear()
+                self.displayContent()
+            return self
+        def isOptionKey(self, key):
+            """If this character was one of the optKeys, determine which
+            option it represented. Else return None."""
+            if not self.content:
+                return None
+            if isinstance(key, int):
+                return None
+            if key in u'\r\n':
+                return self.current
+            idx = self.optKeys.find(key)
+            if idx < 0:
+                return None
+            if idx >= self.maxopts:
+                return None
+            idx += self.scroll
+            if idx >= len(self.content):
+                return None
+            return idx
+        def handleKey(self, key):
+            rval = self.isOptionKey(key)
+            if rval is not None:
+                return rval
+            return super(Form.OptionsList,self).handleKey(key)
+
+    class ActiveOptionsList(OptionsList):
+        """Same as OptionsList, but items must support the active() method which
+        returns False if the item is not currently selectable."""
+        def __init__(self, form, hgt,wid, row,col, options, cmds):
+            super(Form.ActiveOptionsList,self).__init__(form, hgt,wid, row,col, options, cmds)
+            self.current = self.nextActive(0)
+        def displayContent(self, line0=0, line1=None):
+            """Display the options"""
+            if self.contentLen <= 0: return self
+            if line1 is None:
+                line1 = self.chgt - 1
+            elif line1 < line0:
+                line0,line1 = line1,line0
+            win = self.win
+            options = self.content
+            scroll = self.scroll
+            current = self.current
+            optKeys = self.optKeys
+            wid = self.cwid
+            #writeLog("options: " + str(options))
+            # Upper limit is the least of line1, options, maxopts
+            limit = min(line1+1, self.maxopts, self.contentLen - scroll)
+            for i in xrange(line0, limit):
+                try:
+                    active = options[i+scroll].active()
+                except Exception as e:
+                    writeLog("call option.active() failed with %s" % e)
+                    active = False
+                if i+scroll == self.current:
+                    win.attrset(curses.A_BOLD)
+                win.addstr(i,0, '>' if i+scroll == current else ' ')
+                win.addstr(i,1, optKeys[i] if options[i+scroll].active() else ' ')
+                win.addstr(i,3, toUtf(str(options[i+scroll])[:wid-4]))
+                if i+scroll == current:
+                    win.attrset(curses.A_NORMAL)
+            return self
+        def prevActive(self, i):
+            """Return index of previous active object starting at i. If none,
+            returns None."""
+            if i < 0: return None
+            if i >= self.contentLen: i = self.contentLen-1
+            for j in range(i,-1,-1):
+                if self.content[j].active():
+                    return j
+            return None
+        def nextActive(self, i):
+            """Return index of next active object starting at i. If none,
+            returns None."""
+            l = self.contentLen
+            if i < 0: i = 0
+            if i > l-1: return None
+            for j in range(i,l):
+                if self.content[j].active():
+                    return j
+            return None
+        def moveBy(self, i):
+            writeLog("ActiveOptionsList.moveby(%d)" % i)
+            """A little tricky, since we only care about active items."""
+            if i < 0:
+                return self.moveTo(self.prevActive(self.current+i))
+            elif i > 0:
+                return self.moveTo(self.nextActive(self.current+i))
+            return self
+        def movePageUp(self):
+            return self.moveTo(self.nextActive(self.current-self.chgt+1))
+        def movePageDown(self):
+            return self.moveTo(self.prevActive(self.current+self.chgt-1))
+        def moveHome(self):
+            # We want to scroll to the top and then highlight the
+            # first active item. But if that's not on the page, then
+            # we'll have to scroll down enough to put it on the last line.
+            old = self.current
+            new = self.nextActive(0)
+            scroll = max(0, new-self.chgt-1)
+            if self.scroll == scroll:
+                # No scroll, just change highlight
+                self.current = new
+                self.displayContent(old-scroll, old-scroll)
+                self.displayContent(new-scroll, new-scroll)
+            else:
+                # Complete redraw
+                self.scroll = scroll
+                self.current = new
+                self.win.clear()
+                self.displayContent()
+            return self
+        def moveEnd(self):
+            # New current item is last active item. If that's on
+            # the screen, then great, just highlight it. Else
+            # scroll to the end of the list. If that puts the new
+            # item on the screen, we're good. Else scroll up to put
+            # it at the top of the screen if possible.
+            old = self.current
+            new = self.prevActive(self.contentLen-1)
+            scroll = self.scroll
+            if new-scroll <= self.chgt-1:
+                # Just shift highlight
+                self.current = new
+                self.displayContent(old-scroll, old-scroll)
+                self.displayContent(new-scroll, new-scroll)
+            else:
+                # Can we scroll to end?
+                scroll = self.contentLen - self.chgt + 1
+                scroll = max(min(scroll, new), 0)
+                self.scroll = scroll
+                self.current = new
+                self.win.clear()
+                self.displayContent()
+            return self
+
+
+    class ColumnOptionsList(OptionsList):
+	"""Same as OptionsList, but items must implement getValues()
+	which returns a list of strings. By default, gives all
+	columns equal width, but you can subclass this and override
+	resizeColumns()."""
+        def __init__(self, form, hgt,wid, row,col, options, cmds):
+            self.cwidths = []
+            super(Form.ColumnOptionsList,self).__init__(form, hgt,wid, row,col, options, cmds)
+        def resize(self):
+            super(Form.ColumnOptionsList,self).resize()
+            self.resizeColumns()
+            return self
+        def resizeColumns(self):
+            """Fill in the cwidths list with (column,width) pairs.
+            Columns start at 0. Set width to 0 for any column to prevent
+            it from being displayed. This default implementation gives
+            the columns equal width."""
+            ncol = len(self.content[0].getValues()) if self.content else 2
+            wid = self.cwid
+            wid = wid // ncol
+            self.cwidths = [(i*wid,wid-1) for i in range(ncol)]
+            return self
+        def displayContent(self, line0=0, line1=None):
+            """Display the options"""
+            if self.contentLen <= 0: return self
+            if line1 is None:
+                line1 = self.chgt - 1
+            elif line1 < line0:
+                line0,line1 = line1,line0
+            win = self.win
+            options = self.content
+            scroll = self.scroll
+            current = self.current
+            optKeys = self.optKeys
+            wid = self.cwid
+            cwidths = self.cwidths
+            maxc = len(cwidths)
+            #writeLog("options: " + str(options))
+            # Upper limit is the least of line1, options, maxopts
+            limit = min(line1+1, self.maxopts, self.contentLen - scroll)
+            for i in xrange(line0, limit):
+                if i+scroll == self.current:
+                    win.attrset(curses.A_BOLD)
+                win.addstr(i,0, '>' if i+scroll == current else ' ')
+                win.addstr(i,1, optKeys[i])
+                values = options[i+scroll].getValues()
+                win.move(i, 3)
+                win.clrtoeol()
+                for j,s in enumerate(values):
+                    if j < maxc and cwidths[j][1] > 0 and s:
+                        #writeLog(u"%d.%d: s='%s' w=%d sc='%s'" % (i,j,s,cwidths[j][1], s[:cwidths[j][1]]))
+                        win.addstr(i,3+cwidths[j][0], toUtf(s[:cwidths[j][1]]))
+                if i+scroll == current:
+                    win.attrset(curses.A_NORMAL)
+            return self
+
+
+    def __init__(self, win, border=True):
         """Create a new Form object.
-        @param stdscr  top-level screen, needed for some operations
         @param win     window in which the form will be displayed
         @param border  True to add a border around the form
 
@@ -634,7 +1107,6 @@ class Form(object):
         the positions and sizes of the child widgets. Bad things will happen
         if you try to exceed the bounds of the window. Client must allow room
         for the border if there is one."""
-        self.stdscr = stdscr
         self.win = win
         self.border = border
         self.hgt, self.wid = win.getmaxyx()
@@ -652,20 +1124,41 @@ class Form(object):
     def resize(self):
         """Call this after the size of the underlying window changes."""
         self.hgt, self.wid = win.getmaxyx()
+        writeLog("Form.resize(), %dx%d" % (self.hgt, self.wid))
         if self.widgets:
             for widget in self.widgets:
                 widget.resize()
         return self
     def redraw(self):
+        """Perform a complete redraw of this form, clearing the window
+        first. Caller should call refresh()."""
+        writeLog("%s redraw(), about to call clear" % self)
+        self.win.clear()
+        self.win.refresh()
         if self.border:
             self.win.border()
         if self.widgets:
             for widget in self.widgets:
+                #writeLog("call %s.redraw()" % widget)
                 widget.redraw()
-            self.widgets[self.focus].takeFocus()
+            if self.focus is not None:
+                self.widgets[self.focus].takeFocus()
         return self
     def refresh(self):
-        self.win.refresh()
+        # The current focus widget gets drawn last so that its cursor
+        # is placed correctly.
+        fwidget = self.widgets[self.focus] if self.focus is not None else None
+        for widget in self.widgets:
+            if widget != fwidget:
+                widget.refresh()
+        # Refresh focus widget seperately so that the cursor
+        # winds up where it belongs.
+        if fwidget:
+            fwidget.refresh()
+    def _replaceCursor(self):
+        """Put the cursor back where it belongs."""
+        if self.focus is not None:
+            self.widgets[self.focus]._replaceCursor()
     def setFocus(self, w):
         """Explicitly set the focus widget. w is a Widget or index."""
         f = self.focus
@@ -684,34 +1177,39 @@ class Form(object):
         return self
     def nextFocus(self):
         """Advance focus"""
-        w = self._searchFocus(self.focus+1, 1)
+        w = self._searchFocus(self.focus+1 if self.focus is not None else 0, 1)
         self.setFocus(w)
-        self.win.refresh()
+        self.refresh()
         return self
     def previousFocus(self):
         """Move focus back"""
-        w = self._searchFocus(self.focus-1, -1)
+        w = self._searchFocus(self.focus-1 if self.focus is not None else 0, -1)
         self.setFocus(w)
-        self.win.refresh()
+        self.refresh()
         return self
     def _searchFocus(self, start, increment):
         """Starting with start, look for a widget that will accept
         focus. Return the index of that widget, or None. increment
         is +1 or -1"""
-        l = len(self.widgets)
-        start %= l
-        for i in range(l):
+        n = len(self.widgets)
+        start %= n
+        for i in range(n):
             if self.widgets[start].canFocus():
                 return start
-            start = (start+increment)%l
+            start = (start+increment) % n
         return None
     def getUchar(self):
         """Return either a unicode character of an integer keycode."""
-        return getUchar(self.stdscr)
+        return getUchar(self.win)
     def handleKey(self, key):
-        """Handle this key. Pass an int keycode or unicode character."""
-        if self.widgets[self.focus].keystroke(key):
-            return True
+        """Handle this key. Pass an int keycode or unicode character.
+        returns None if not used, True if used directly,
+        else whatever the widget returned."""
+        writeLog("Form.handleKey(%s)" % keystr(key))
+        if self.focus is not None:
+            rval = self.widgets[self.focus].handleKey(key)
+            if rval is not None:
+                return rval
         if isinstance(key, int):
             if key in (KEY_TAB, curses.KEY_DOWN):
                 self.nextFocus()
@@ -720,30 +1218,42 @@ class Form(object):
                 self.previousFocus()
                 return True
             if key == CTRL_L:
-                self.redraw().refresh()
+                writeLog("  refresh")
+                self.win.clear()
+                self.win.refresh()
                 return True
         else:
             if key in ("\t\r\n"):
                 self.nextFocus()
                 return True
             if key == '\f':
-                self.redraw().refresh()
+                writeLog("Form calling redraw, refresh")
+                self.redraw()
+                self.refresh()
                 return True
-        # We didn't want it, do any of the widgets?
-        return False    # didn't use this key
+        writeLog("  return None")
+        return None    # didn't use this key
     def wait(self):
         """Process keystrokes until encounter one we don't want,
         then return it. This class is different from others: the
         return value will either be int for a keycode, or a unicode
-        character"""
+        character. In practice you'll want to replace or override
+        this function to handle input the way you want. For example,
+        the default behavior of handleKey for CR is to move focus to
+        the next item, while you might want to assign it a different
+        meaning."""
         while True:
-            key = getUchar(self.stdscr)
-#            if isinstance(key, int):
-#                writeLog("Received key %s %o" % (type(key), key))
-#            else:
-#                writeLog("Received key %s %o" % (type(key), ord(key)))
-            if not self.handleKey(key):
+            key = getUchar(self.win)
+            #writeLog("Form.wait(), key=%s, calling handleKey()" % key)
+            rval = self.handleKey(key)
+            #writeLog("%s.wait(%s) => %s" % (self, key, rval))
+            if rval is None:
                 return key
+
+def keystr(key):
+    if isinstance(key, int): return "%#o" % key
+    if not printable(key): return "%#o" % ord(key)
+    return key
 
 
 # Version-dependent utilities
@@ -755,7 +1265,6 @@ if PY3:
     def printable(c):
         return s.isprintable()
 else:
-    __uchar_buffer = ""
     def getUchar(window):
         """Return one unicode character or one int keycode.
         Only handles UTF-8."""
@@ -767,7 +1276,7 @@ else:
         elif ic >= 0400:        # curses keycode
             return ic
         else:                   # Collect characters until decode() doesn't fail
-            __uchar_buffer = chr(ic)
+            uchar_buffer = chr(ic)
             while True:
                 ic = window.getch()
                 if curses.ascii.isascii(ic):
@@ -777,17 +1286,17 @@ else:
                     # should not happen, abandon the buffer
                     return ic
                 else:
-                    __uchar_buffer += chr(ic)
+                    uchar_buffer += chr(ic)
                     try:
                         # TODO: preferred encoding
-                        return __uchar_buffer.decode('utf-8')
+                        return uchar_buffer.decode('utf-8')
                     except UnicodeError as e:
-                        if len(__uchar_buffer) >= 4:
+                        if len(uchar_buffer) >= 4:
                             return u"?"
                         # otherwise, try with more characters
+
     def printable(c):
         # See https://en.wikipedia.org/wiki/Unicode_control_characters
-        # Only works for ascii for now
         if c < ' ': return False
         if c <= '\176': return True  # most common case
         c = ord(c)
