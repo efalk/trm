@@ -6,29 +6,30 @@ of Python curses. It works with both Python2 and Python3. With
 Python3, it works better with Unicode characters since the Python3
 version of curses handles Unicode.
 
-The basic usage is to create a Form object on top of a curses window
-(typically, but not necessarily, stdscr). Then create various Widget
+The basic usage is to create a **Form** object on top of a curses window
+(typically, but not necessarily, stdscr). Then create various **Widget**
 objects attached to that Form. Pass the list of Widgets to
-form.setWidgets() to complete the setup. Call form.redraw() and
-form.refresh() to get everything on the screen.
+`form.setWidgets()` to complete the setup. Call `form.redraw()` and
+`form.refresh()` to get everything on the screen.
 
-Use form.getUchar() to read one keystroke from the user. This takes the
-form of a unicode character or an integer keycode (e.g. curses.KEY\_UP).
-Pass these keys to form.handleKey(). The form may use the keystroke for
-its own purposes (e.g. TAB or KEY\_BTAB will shift focus to the next or
-previous widget). In this case, the Form will return True to indicate that
-the key was consumed.
-
-Otherwise, the key is passed to whichever widget currently has focus.
-That widget will return None to indicate that it wasn't interested in
-the key, otherwise it will return a value that depends on the widget. The
+Use `form.getUchar()` to read one keystroke from the user. This
+takes the form of a unicode character or an integer keycode (e.g.
+curses.KEY\_UP).  Pass these keys to `form.handleKey()`.  The key
+is passed to whichever widget currently has focus.  That widget
+will return None to indicate that it wasn't interested in the key,
+otherwise it will return a value that depends on the widget. The
 Form will return whatever the widget returns.
 
-In general, form.handleKey() returns None if the key was not used, or
+If the widget wasn't interested in the key, the form may use the
+keystroke for its own purposes (e.g. TAB or KEY\_BTAB will shift
+focus to the next or previous widget). In this case, the Form will
+return True to indicate that the key was consumed.
+
+In general, `form.handleKey()` returns None if the key was not used, or
 anything else if it was.
 
 There are no layout classes or container widgets. Client is
-completely responsible for layout out the widgets within the form.
+completely responsible for layout of the widgets within the form.
 
 Most changes to any widget require calling `refresh()` to flush the
 changes to the screen. When making multiple changes, you can wait
@@ -97,8 +98,7 @@ Produces this screen
 ----
 # Widgets
 
-The base class for all widgets is the Form.Widget class. The methods
-common to all widgets are as follows:
+The base class for all widgets is the Form.Widget class.
 
 Some of these widgets may seem oddly eccentric. They were written to support
 an app I was writing.
@@ -106,6 +106,8 @@ an app I was writing.
 ## Widget
 
 Base class for all other widgets. Not normally instantiated directly.
+
+The methods common to all widgets are as follows:
 
 ### Constructor(form, hgt, wid, row, col)
 
@@ -121,7 +123,7 @@ row,column and height,width rather than x,y.
 Note also that if the form has a border, you need to lay out your
 widgets accordingly so as to not overwrite it.
 
-**hgt** is the height of the widget. Non-negative integers specify
+**hgt** is the height of the widget. Positive integers specify
 the height of the widget directly. Negative integers are taken as
 distances from the bottom of the widget.  Thus, for example,
 `Form.Widget(form, -3,40, 10,0)` would cause the widget to be placed
@@ -131,7 +133,7 @@ that brings it three rows from the bottom of the form.
 In some cases, the value `None` may be used to have the Widget compute a height based
 on its contents. Not all widgets support this.
 
-**wid** is the width of the widget. The rules for non-negative and negative values
+**wid** is the width of the widget. The rules for positive and negative values
 are the same as for **hgt**.
 
 **row** is the location of the top of the widget. Negative values are taken relative
@@ -142,9 +144,10 @@ relative to the right edge of the form.
 
 ### set(value)
 
-Set the widget's value. The type of the value depends on the widget. For example, it
-would be a string for a Label widget, or a boolean for a Checkbox widget. The widget
-will redraw itself. You should call `refresh()` after.
+Set the widget's value. The type of the value depends on the widget.
+For example, it would be a string for a **Label** widget, or a
+boolean for a **Checkbox** widget. The widget will redraw itself.
+You should call `refresh()` after.
 
 ### get()
 
@@ -174,13 +177,14 @@ Pass a keystroke (unicode character or integer keycode) to the widget.
 If the widget isn't interested, it will return None. If the widget
 consumed the keystroke but there's nothing else to report, it will
 return True. The widget _may_ return another value depending on
-its nature; for example a Checkbox will return True or False depending
-on the new state of the checkbox.
+its nature; for example a **Checkbox** will return True or False depending
+on the new state of the checkbox; a **List** might return the index
+of the selected item.
 
 ### redraw()
 
 Redraw the widget's content. You don't normally call this directly,
-as it's called automatically when needed in most cases. Exceptions
+as it's called automatically as needed in most cases. Exceptions
 include `setSize()` and `clear()`.
 
 ### resize()
@@ -237,17 +241,17 @@ The button is drawn in bold when it has the focus. Space key activates it.
 When activated, the button's callback is called.
 
     ┌────────────────┐
-    │**>Guess settings<**│
+    │>Guess settings<│
     └────────────────┘
 
-Not very useful unless a callback is specified.
+You'll need to specify a callback to make use of a Button.
 
 ### Constructor:
 
     Form.Button(form, hgt,wid, row,col, label)
 
-`hgt` should always be 3. Set `wid` to None to select a width wide enough
-to accommodate the label.
+`hgt` should always be 3. Set `wid` to None to compute the width
+from the label.
 
 ### setCallback(callback, client)
 
@@ -350,17 +354,17 @@ Write a sequence of lines to the output window.
 
 ## Pager
 
-Display a list of lines in a region of the form. Provides scrolling if
+Display a list of strings in a region of the form. Provides scrolling if
 the list is longer than the height of the region.
 
 Responds to keystrokes as follows:
 
-    <newline>  j  ^N  ^E  KEY_DOWN     scroll down one line
-    k  ^P  KEY_UP                      scroll up one line
-    >  ^F  KEY_NPAGE                   scroll down one page
-    <  ^B  KEY_PPAGE                   scroll up one page
-    ^  KEY_HOME                        scroll to top
-    $  KEY_END                         scroll to end
+    j  ^N  ^E  KEY_DOWN     scroll down one line
+    k  ^P  KEY_UP           scroll up one line
+    >  ^F  KEY_NPAGE        scroll down one page
+    <  ^B  KEY_PPAGE        scroll up one page
+    ^  KEY_HOME             scroll to top
+    $  KEY_END              scroll to end
 
 ### Constructor:
 
@@ -422,7 +426,7 @@ the list.
 
      This is line 0
      This is line 1
-    **>This is line 2**
+    >This is line 2
      This is line 3
      This is line 4
      This is line 5
@@ -450,7 +454,7 @@ Return the index of the currently-highlit item.
 ### setcurrent(i, row=None)
 
 Highlight the specified item. The widget will adjust the scroll to keep
-that item into view. The widget does _not_ redraw after this, so this
+that item in view. The widget does _not_ redraw after this, so this
 function is only used when you intend to completely redraw the widget
 later. You probably want to use `moveTo()` instead.
 
@@ -461,7 +465,7 @@ the widget choose a reasonable scroll value.
 ### moveTo(i)
 
 Highlight the specified item. The widget will adjust the scroll to keep
-that item into view. The widget does a redraw. Call `refresh()`
+that item in view. The widget does a redraw. Call `refresh()`
 after calling this.
 
 ### moveBy(i)
@@ -489,7 +493,7 @@ Subclass of List, except each item is prefixed by a letter to make quick
 selection easy. The prefix letters are a-zA-Z0-9, with some exceptions.
 
      a INBOX
-    **>b Drafts**
+    >b Drafts
      c Sent
      d junk
      e Deleted Messages
@@ -512,8 +516,8 @@ implicitly included in this list.
 
 ### isOptionKey(key)
 
-Checks to see if `key` is the prefix character for a list item, and
-if so, returns the index of that item. Otherwise returns None.
+Checks to see if `key` selects a list item, and if so, returns the
+index of that item. Otherwise returns None.
 
 
 ## ActiveOptionsList
@@ -526,7 +530,7 @@ be highlit.
 
        start of list
        This is line 0
-    **>c This is line 1**
+    >c This is line 1
      d This is line 2
        This is line 3
      f This is line 4
@@ -551,7 +555,7 @@ be displayed in columns.
      g  N  Fa la la la laptop!                            Debbie                                  2007-12-07 05:10  1483
      h  U  Fa la la la laptop!                            Debbie                                  2007-12-11 05:02  1642
      i     Fa la la la laptop!                            Debbie                                  2007-12-11 05:34  1641
-    **>j     Last chance to get an iPod for Christmas!      debbie@surveyhometimeforyou.com         2000-01-18 07:46  1721**
+    >j     Last chance to get an iPod for Christmas!      debbie@surveyhometimeforyou.com         2000-01-18 07:46  1721
      k     Last chance to get an iPod for Christmas!      debbie@surveyhometimeforyou.com         2000-01-18 08:45  1750
      l     Last chance to get an iPod for Christmas!      debbie@surveyhometimeforyou.com         2000-01-19 07:00  1753
      o     Last chance to get an iPod for Christmas!      debbie@surveyhometimeforyou.com         2000-01-19 07:51  1751
@@ -566,11 +570,12 @@ behavior by subclassing ColumnOptionsList and overriding resizeColumns().
 
 ### resizeColumns()
 
-Computes the `cwidths` list which is a list of `(column,width)` pairs, one per
-column. See the source code to ColumnOptionsList in forms.py for an
-example. If any pair in `cwidths` has a width of zero, that column is
-omitted on output. If `cwidths` has fewer items than an item, trailing
-elements of that item will be omitted.
+Override this in a subclass to compute the `cwidths` list which is
+a list of `(column,width)` pairs, one per column. See the source
+code to ColumnOptionsList in forms.py for an example. If any pair
+in `cwidths` has a width of zero, that column is omitted on output.
+If `cwidths` has fewer items than an item, trailing elements of
+that item will be omitted.
 
 
 ----
@@ -624,7 +629,8 @@ Returns the widget that currently holds focus, or None.
 ### setFocus(widget)
 
 Move input focus to the specified widget. Widget may be specified as
-a widget or an index into the list of widgets.
+a widget or an index into the list of widgets. Call `refresh()`
+after calling this.
 
 ### nextFocus(widget)
 
@@ -637,7 +643,7 @@ Move input focus to the previous widget
 ### getUchar()
 
 Return one key from the user. This will either be a unicode character or an
-integer keycode such as curses.KEY_HOME.
+integer keycode such as `curses.KEY_HOME`.
 
 ### handleKey(key)
 
