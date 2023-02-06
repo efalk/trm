@@ -126,7 +126,7 @@ class Form(object):
             self.win = self.form.win.derwin(self.chgt,self.cwid, self.crow,self.ccol)
             self.win.clear()
             return self
-        def setSize(self, hgt,wid, row,col):
+        def setSize(self, hgt,wid, row=None,col=None):
             """Set the size and/or position of the widget. Set any value to
             None to leave it unchanged. Implicitly calls resize(). Caller should
             call redraw() and refresh() at some point."""
@@ -139,6 +139,14 @@ class Form(object):
         def set(self, value):
             """Set content."""
             return self
+        def get(self):
+            return None
+        def clear(self):
+            """Clear the subwindow, caller should call refresh(). Call
+            this sparingly, as it can result in the entire screen being
+            updated."""
+            self.win.clear()
+            return self
         def redraw(self):
             """Redraw the widget. Caller should call refresh() at some point"""
             return self
@@ -150,6 +158,14 @@ class Form(object):
         def enable(self, enabled=True):
             self.enabled = enabled
             return self.redraw()
+        def handleKey(self, key):
+            """Return None if not interested in this key. May return
+            anything else if the key was used. Value may be meaningful
+            to the application.  If the widget uses a callback, the
+            value is likely to be the same one passed to the callback.
+            Key may be an int keycode, or unicode character"""
+            return None
+        # Below this point are methods used for subclassing
         def canFocus(self):
             """Return False if don't want focus."""
             return False
@@ -170,13 +186,6 @@ class Form(object):
             """Put cursor back where it belongs. Does nothing for widgets
             that don't use the cursor."""
             return self
-        def handleKey(self, key):
-            """Return None if not interested in this key. May return
-            anything else if the key was used. Value may be meaningful
-            to the application.  If the widget uses a callback, the
-            value is likely to be the same one passed to the callback.
-            Key may be an int keycode, or unicode character"""
-            return None
 
     class Label(Widget):
         def __init__(self, form, hgt,wid, row,col, label):
@@ -194,13 +203,15 @@ class Form(object):
             self.label = label
             self.redraw()
             return self
+        def get(self):
+            return self.label
         def __repr__(self):
             return '<Label "%s">' % toUtf(self.label)
 
     class Text(Widget):
         """Present a one-line text field that the user can type into."""
-        def __init__(self, form, hgt,wid, row,col, default=u""):
-            self.buffer = list(default)
+        def __init__(self, form, hgt,wid, row,col, initial=u""):
+            self.buffer = list(initial)
             super(Form.Text,self).__init__(form, hgt,wid, row,col)
             self.scroll = 0
             self.callback = self.client = None
@@ -399,7 +410,6 @@ class Form(object):
             super(Form.Checkbox,self).__init__(form, hgt,wid, row,col, label)
             self.checked = False
         def redraw(self):
-            # If height is 3 or more, add a border
             if not self.enabled:
                 self.win.attrset(curses.A_DIM)
             elif self.activated:
@@ -412,8 +422,11 @@ class Form(object):
             #self.win.addstr(self.hgt/2,self.wid-2, '!' if self.checked else '.')
             self.win.attrset(curses.A_NORMAL)
             return self
+        def get(self):
+            return self.checked
         def set(self, checked):
             self.activate(checked, False)
+            return self
         def activate(self, checked, doCallback=True):
             """Called when button pressed."""
             self.checked = checked
@@ -446,22 +459,26 @@ class Form(object):
         will place the widget at the bottom of the form, filling its
         width. Height to be determined by the first column of shortHelp.
 
-        shortHelp is an array [cols][rows] of short help messages, e.g.
-        (("? Help, "q Back"), ("n Next", "< page up"), ("p Prev", "> page down"), ("CR select",))
+        shortHelp is an array [rows][cols] of short help messages, e.g.
+             (("F1 ?  Help", "DEL delete 1 char", u"↑ BTAB Previous", "CR accept"),
+              ("F2 ^G Guess", "^U  delete all", u"↓ TAB  Next", "ESC cancel"))
 
         This widget does not respond to user input.  Disable to
         make invisible.
         """
         def __init__(self, form, hgt,wid, row,col, shortHelp):
             self.shortHelp = shortHelp
-            writeLog("ShortHelp(), len(help) = %d" % len(shortHelp))
+            writeLog("New ShortHelp(), len(help) = %d" % len(shortHelp))
             super(Form.ShortHelp,self).__init__(form, hgt,wid, row,col)
+        def get(self):
+            return self.shortHelp
+        def set(self, shortHelp):
+            self.shortHelp = shortHelp
+            self.redraw()
         def redraw(self):
             """Display the short help at the bottom of the screen. Items
             that won't fit are discarded, so put the least important items
             at the end."""
-            #writeLog("This is ShortHelp.redraw() %dx%d %d,%d" % \
-            #    (self.chgt, self.cwid, self.crow, self.ccol))
             shortHelp = zip(*self.shortHelp)
             # Compute column widths
             wid = self.cwid
@@ -511,6 +528,12 @@ class Form(object):
             return self
         def write(self, s):
             self.subwin.addstr(toUtf(s))
+            self.subwin.refresh()
+            return self
+        def writelines(self, lines):
+            for line in lines:
+                self.subwin.addstr(toUtf(line))
+                self.subwin.addstr('\n')
             self.subwin.refresh()
             return self
 
@@ -698,16 +721,20 @@ class Form(object):
         """Like Pager, but adds the concept of a "current" item. Widget generally
         tries to keep that item on the screen. That item can be selected by the
         user by moving focus to it and hitting enter."""
-        def __init__(self, form, hgt,wid, row,col, options):
-            super(Form.List,self).__init__(form, hgt,wid, row,col, options)
-            self.current = 0
+        def __init__(self, form, hgt,wid, row,col, items):
             self.maxopts = 0    # max items that can be displayed
+            self.current = 0
+            super(Form.List,self).__init__(form, hgt,wid, row,col, items)
+            self.callback = None
+            self.client = None
+            writeLog("New List, %d items" % len(self.content))
         def resize(self):
             super(Form.List,self).resize()
             self.maxopts = self.chgt
             return self
         def displayContent(self, line0=0, line1=None):
-            """Display the options"""
+            """Display the items"""
+            writeLog("List.displayContent(%d,%s)" % (line0,line1))
             if self.contentLen <= 0: return self
             if line1 is None:
                 line1 = self.maxopts - 1
@@ -715,19 +742,23 @@ class Form(object):
                 line0,line1 = line1,line0
             writeLog("List.displayContent(%d,%d)" % (line0, line1))
             win = self.win
-            options = self.content
+            items = self.content
             scroll = self.scroll
             current = self.current
             wid = self.cwid
-            #writeLog("options: " + str(options))
+            #writeLog("items: " + str(items))
             limit = min(line1+1, self.contentLen - scroll)
             for i in xrange(line0, limit):
                 if i+scroll == current:
                     win.attrset(curses.A_BOLD)
                 win.addstr(i,0, '>' if i+scroll == current else ' ')
-                win.addstr(i,1, toUtf(str(options[i+scroll])[:wid-2]))
+                win.addstr(i,1, toUtf(str(items[i+scroll])[:wid-2]))
                 if i+scroll == current:
                     win.attrset(curses.A_NORMAL)
+            return self
+        def setCallback(self, callback, client):
+            self.callback = callback
+            self.client = client
             return self
         def getCurrent(self):
             """Get the index of the currently-selected item, or None."""
@@ -753,12 +784,9 @@ class Form(object):
             window."""
             if i is None: return self           # Do nothing
             current = self.current
-            #writeLog("moveTo(%d)" % i)
             i = max(min(i, self.contentLen - 1), 0)
-            #writeLog(" new i = %d" % i)
             #writeLog("List.moveTo(%d), current=%d, scroll=%d" % (i,current,self.scroll))
             if i == current:
-                #writeLog(" i==current, do nothing")
                 return self
             win = self.win
             scroll = self.scroll
@@ -777,16 +805,6 @@ class Form(object):
                 #writeLog(" list undraw line %d, scroll down scrollTo(%d)" % (current-scroll, i-self.maxopts+1))
                 self.scrollTo(i-self.maxopts+1)
             return self
-        # Scrolling rules:
-        # * Move up or down one line, and the focused item
-        #   moves one line, scrolling only enough to keep it
-        #   on the screen.
-        # * Page up or down one page, same as for Pager, and the
-        #   current item is then adjusted if needed to keep it
-        #   on the screen.
-        # * Home or End and the focused item moves to start or
-        #   end, and the view scrolls only enough to keep it on
-        #   the screen.
         def moveBy(self, i):
             #writeLog("List.moveby(%d), call moveTo(%d)" % (i, self.current+i))
             return self.moveTo(self.current+i)
@@ -817,12 +835,13 @@ class Form(object):
             was used, else return None."""
             #writeLog("List.handleKey(%s)" % keystr(key))
             if key in (u"\n", u"\r"):
+                if self.callback:
+                    self.callback(self, self.current, self.client)
                 return self.current
             if key in (u'j', u'n', CTRL_N, CTRL_E, curses.KEY_DOWN):
                 self.moveBy(1).refresh()
                 return True
             if key in (u'k', u'p', CTRL_P, CTRL_Y, curses.KEY_UP):
-                writeLog("key up, call moveby(-1)")
                 self.moveBy(-1).refresh()
                 return True
             if key in ('>', CTRL_F, curses.KEY_NPAGE, u' '):
@@ -846,9 +865,10 @@ class Form(object):
         optKeys = "abcdefghijklmorstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         def __init__(self, form, hgt,wid, row,col, options, cmds):
             # String of commands. Commands "? \nnp<>^$q" are implied.
-            self.cmds = cmds = cmds + "? \nnp<>^$q"
+            self.cmds = cmds = cmds + "? np<>^$q"
             self.optKeys = "".join([c for c in self.optKeys if c not in cmds])
             super(Form.OptionsList,self).__init__(form, hgt,wid, row,col, options)
+            writeLog("new OptionsList, %d items" % len(self.content))
         def resize(self):
             super(Form.OptionsList,self).resize()
             self.maxopts = min(len(self.optKeys), self.chgt)
@@ -866,7 +886,6 @@ class Form(object):
             current = self.current
             optKeys = self.optKeys
             wid = self.cwid
-            #writeLog("options: " + str(options))
             # Upper limit is the least of line1, options, maxopts
             limit = min(line1+1, self.contentLen - scroll, self.maxopts)
             for i in xrange(line0, limit):
@@ -885,7 +904,6 @@ class Form(object):
             #writeLog("Options.moveto(%d)" % i)
             current = self.current
             i = max(min(i, self.contentLen - 1), 0)
-            #writeLog(" new i = %d" % i)
             if i == current:
                 return self
             win = self.win
@@ -933,8 +951,8 @@ class Form(object):
     class ActiveOptionsList(OptionsList):
         """Same as OptionsList, but items must support the active() method which
         returns False if the item is not currently selectable."""
-        def __init__(self, form, hgt,wid, row,col, options, cmds):
-            super(Form.ActiveOptionsList,self).__init__(form, hgt,wid, row,col, options, cmds)
+        def __init__(self, form, hgt,wid, row,col, items, cmds):
+            super(Form.ActiveOptionsList,self).__init__(form, hgt,wid, row,col, items, cmds)
             self.current = self.nextActive(0)
         def displayContent(self, line0=0, line1=None):
             """Display the options"""
@@ -944,25 +962,24 @@ class Form(object):
             elif line1 < line0:
                 line0,line1 = line1,line0
             win = self.win
-            options = self.content
+            items = self.content
             scroll = self.scroll
             current = self.current
             optKeys = self.optKeys
             wid = self.cwid
-            #writeLog("options: " + str(options))
-            # Upper limit is the least of line1, options, maxopts
+            # Upper limit is the least of line1, items, maxopts
             limit = min(line1+1, self.maxopts, self.contentLen - scroll)
             for i in xrange(line0, limit):
                 try:
-                    active = options[i+scroll].active()
+                    active = items[i+scroll].active()
                 except Exception as e:
                     writeLog("call option.active() failed with %s" % e)
                     active = False
                 if i+scroll == self.current:
                     win.attrset(curses.A_BOLD)
                 win.addstr(i,0, '>' if i+scroll == current else ' ')
-                win.addstr(i,1, optKeys[i] if options[i+scroll].active() else ' ')
-                win.addstr(i,3, toUtf(str(options[i+scroll])[:wid-4]))
+                win.addstr(i,1, optKeys[i] if items[i+scroll].active() else ' ')
+                win.addstr(i,3, toUtf(str(items[i+scroll])[:wid-4]))
                 if i+scroll == current:
                     win.attrset(curses.A_NORMAL)
             return self
@@ -986,8 +1003,7 @@ class Form(object):
                     return j
             return None
         def moveBy(self, i):
-            writeLog("ActiveOptionsList.moveby(%d)" % i)
-            """A little tricky, since we only care about active items."""
+            # A little tricky, since we only care about active items.
             if i < 0:
                 return self.moveTo(self.prevActive(self.current+i))
             elif i > 0:
@@ -1046,9 +1062,9 @@ class Form(object):
 	which returns a list of strings. By default, gives all
 	columns equal width, but you can subclass this and override
 	resizeColumns()."""
-        def __init__(self, form, hgt,wid, row,col, options, cmds):
+        def __init__(self, form, hgt,wid, row,col, items, cmds):
             self.cwidths = []
-            super(Form.ColumnOptionsList,self).__init__(form, hgt,wid, row,col, options, cmds)
+            super(Form.ColumnOptionsList,self).__init__(form, hgt,wid, row,col, items, cmds)
         def resize(self):
             super(Form.ColumnOptionsList,self).resize()
             self.resizeColumns()
@@ -1071,27 +1087,25 @@ class Form(object):
             elif line1 < line0:
                 line0,line1 = line1,line0
             win = self.win
-            options = self.content
+            items = self.content
             scroll = self.scroll
             current = self.current
             optKeys = self.optKeys
             wid = self.cwid
             cwidths = self.cwidths
             maxc = len(cwidths)
-            #writeLog("options: " + str(options))
-            # Upper limit is the least of line1, options, maxopts
+            # Upper limit is the least of line1, items, maxopts
             limit = min(line1+1, self.maxopts, self.contentLen - scroll)
             for i in xrange(line0, limit):
                 if i+scroll == self.current:
                     win.attrset(curses.A_BOLD)
                 win.addstr(i,0, '>' if i+scroll == current else ' ')
                 win.addstr(i,1, optKeys[i])
-                values = options[i+scroll].getValues()
+                values = items[i+scroll].getValues()
                 win.move(i, 3)
                 win.clrtoeol()
                 for j,s in enumerate(values):
                     if j < maxc and cwidths[j][1] > 0 and s:
-                        #writeLog(u"%d.%d: s='%s' w=%d sc='%s'" % (i,j,s,cwidths[j][1], s[:cwidths[j][1]]))
                         win.addstr(i,3+cwidths[j][0], toUtf(s[:cwidths[j][1]]))
                 if i+scroll == current:
                     win.attrset(curses.A_NORMAL)
@@ -1112,29 +1126,34 @@ class Form(object):
         self.hgt, self.wid = win.getmaxyx()
         self.focus = None          # index into widgets of widget with focus
         self.widgets = []
+        self.needResize = True
     def setWidgets(self, widgets):
         """Set the list of widgets. Caller should call redraw()
         and refresh() after."""
         self.widgets = widgets
         self.focus = self._searchFocus(0,1)
+        return self
     def addWidgets(self, widgets):
         """Extend the list of widgets. Caller should call redraw()
         and refresh() after."""
         self.widgets.extend(widgets)
+        return self
     def resize(self):
         """Call this after the size of the underlying window changes."""
-        self.hgt, self.wid = win.getmaxyx()
+        self.hgt, self.wid = self.win.getmaxyx()
         writeLog("Form.resize(), %dx%d" % (self.hgt, self.wid))
         if self.widgets:
             for widget in self.widgets:
                 widget.resize()
+        self.needResize = False
         return self
     def redraw(self):
         """Perform a complete redraw of this form, clearing the window
         first. Caller should call refresh()."""
         writeLog("%s redraw(), about to call clear" % self)
         self.win.clear()
-        self.win.refresh()
+        writeLog("Form.redraw(), needResize=%s" % self.needResize)
+        if self.needResize: self.resize()
         if self.border:
             self.win.border()
         if self.widgets:
@@ -1143,22 +1162,29 @@ class Form(object):
                 widget.redraw()
             if self.focus is not None:
                 self.widgets[self.focus].takeFocus()
+        self.win.refresh()
         return self
     def refresh(self):
         # The current focus widget gets drawn last so that its cursor
         # is placed correctly.
         fwidget = self.widgets[self.focus] if self.focus is not None else None
-        for widget in self.widgets:
-            if widget != fwidget:
-                widget.refresh()
+#       TODO: do we need to refresh them individually? It seems not.
+#        for widget in self.widgets:
+#            if widget != fwidget:
+#                widget.refresh()
+        self.win.refresh()
         # Refresh focus widget seperately so that the cursor
         # winds up where it belongs.
         if fwidget:
             fwidget.refresh()
+        return self
     def _replaceCursor(self):
         """Put the cursor back where it belongs."""
         if self.focus is not None:
             self.widgets[self.focus]._replaceCursor()
+    def getFocus(self):
+        """Return the widget that currently has input focus, or None"""
+        return self.widgets[self.focus] if self.focus is not None else None
     def setFocus(self, w):
         """Explicitly set the focus widget. w is a Widget or index."""
         f = self.focus
@@ -1210,26 +1236,24 @@ class Form(object):
             rval = self.widgets[self.focus].handleKey(key)
             if rval is not None:
                 return rval
-        if isinstance(key, int):
-            if key in (KEY_TAB, curses.KEY_DOWN):
-                self.nextFocus()
-                return True
-            if key in (curses.KEY_BTAB, curses.KEY_UP):
-                self.previousFocus()
-                return True
-            if key == CTRL_L:
-                writeLog("  refresh")
-                self.win.clear()
-                self.win.refresh()
-                return True
-        else:
+        if key in (KEY_TAB, curses.KEY_DOWN):
+            self.nextFocus()
+            return True
+        if key in (curses.KEY_BTAB, curses.KEY_UP):
+            self.previousFocus()
+            return True
+        if key == CTRL_L:
+            writeLog("  calling redraw, refresh")
+            self.redraw()
+            self.refresh()
+            return True
+        if key == curses.KEY_RESIZE:
+            writeLog("  calling resize, redraw, refresh")
+            self.resize().redraw().refresh()
+            return True
+        if isinstance(key, basestring):
             if key in ("\t\r\n"):
                 self.nextFocus()
-                return True
-            if key == '\f':
-                writeLog("Form calling redraw, refresh")
-                self.redraw()
-                self.refresh()
                 return True
         writeLog("  return None")
         return None    # didn't use this key
@@ -1244,9 +1268,7 @@ class Form(object):
         meaning."""
         while True:
             key = getUchar(self.win)
-            #writeLog("Form.wait(), key=%s, calling handleKey()" % key)
             rval = self.handleKey(key)
-            #writeLog("%s.wait(%s) => %s" % (self, key, rval))
             if rval is None:
                 return key
 

@@ -104,7 +104,7 @@ class ContentScreen(forms.Form):
         self.promptY = self.statusY = self.helpY = 0
         self.contentHgt = 0
         self.contentY = 0
-        self.resize()
+        #self.resize()
 
     def resize(self):
         """Compute the sizes and positions of the content. Create the
@@ -161,6 +161,7 @@ class ContentScreen(forms.Form):
         widgets = filter(lambda w: w, widgets)
         #writeLog("set widgets %s" % widgets)
         self.setWidgets(widgets)
+        self.needResize = False
         return self
 
     def _createContent(self):
@@ -289,6 +290,7 @@ class ListScreen(ContentScreen):
         writeLog("New ListScreen")
         super(ListScreen,self).__init__(win, text, prompt, shortHelp, status)
     def _createContent(self):
+        writeLog("create new List(%d,%d, %d,%d, %d items)" % (self.contentHgt,-1, self.contentY,0, len(self.content)))
         self.contentW = self.List(self, self.contentHgt,-1, self.contentY,0, self.content)
     def wait(self):
         while True:
