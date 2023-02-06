@@ -286,7 +286,7 @@ def main():
         sys.stdout = open(term,"w")
 
     try:
-        main_func(curses.initscr())
+        key = main_func(curses.initscr())
 
     except Exception as e:
         curses.endwin()
@@ -299,7 +299,8 @@ def main():
         sys.exit(1)
     else:
         curses.endwin()
-        WriteConfig(config, rcfile)
+        if key != u'x':
+            WriteConfig(config, rcfile)
         return 0
 
 def main_func(stdscr):
@@ -352,7 +353,7 @@ def main_func(stdscr):
     if configGet(config, "global","splashscreen") != VERSION:
         SplashScreen(stdscr)
 
-    AccountScreen(stdscr, accounts)
+    return AccountScreen(stdscr, accounts)
 
 
 #       SPLASH SCREEN
@@ -382,14 +383,15 @@ More commands:
  -             delete currently-selected account
  E             edit currently-selected account
  q             exit trm
- x             same"""
+ x             exit trm without saving settings"""
 
 def AccountScreen(win, accounts):
     """Prompt user to select an account. When the user selects
     one, go to MailboxScreen().  If user selects 'q', this function
     returns."""
-    opts = [acct.name for acct in accounts]
-    optScreen = AccountScreenSetup(win, accounts, opts)
+    global config
+
+    optScreen = AccountScreenSetup(win, accounts)
     optScreen.redraw().refresh()
     writeLog("AccountScreen about to enter main loop")
     while True:
@@ -397,10 +399,7 @@ def AccountScreen(win, accounts):
         idx = optScreen.isOptionKey(key)
         if idx is not None:
             writeLog("Chose option %d" % idx)
-            #optScreen = None
             DoMboxScreen(win, accounts[idx])
-            # Returned from mbox screen, resume account selection
-            #optScreen = AccountScreenSetup(win, accounts, opts)
             optScreen.redraw().refresh()
             continue
         rval = optScreen.handleKey(key)
@@ -415,21 +414,41 @@ def AccountScreen(win, accounts):
             current = optScreen.getCurrent()
             if current is None: current = 0
             optScreen.setTopPrompt("Select account. %d/%d, F1 or ? for help: " % \
-                (current+1, len(opts)))
+                (current+1, len(accounts)))
             optScreen.refresh()
             continue
         if key == u'+':
             newEmail = imapform.getImapAccount(win)
-        writeLog("Ignoring key code %d" % keystr(key))
+            if newEmail:
+                writeLog("imapForm returns %s" % newEmail)
+                accounts.append(newEmail)
+                sectName = 'account "%s"' % newEmail.name
+                try:
+                    config.add_section(sectName)
+                    writeLog("new section %s" % sectName)
+                    config.set(sectName, "imap", newEmail.host)
+                    config.set(sectName, "imapport", newEmail.port)
+                    config.set(sectName, "imapconn", newEmail.conn)
+                    config.set(sectName, "imapuser", newEmail.user)
+                    if newEmail.passwd:
+                        config.set(sectName, "imappass", newEmail.passwd)
+                    if newEmail.authtype:
+                        config.set(sectName, "imapauth", newEmail.authtype)
+                except Exception as e:
+                    writeLog("Failed to set config: %s" % e)
+                optScreen = AccountScreenSetup(win, accounts)
+            optScreen.redraw().refresh()
+            continue
+        writeLog("Ignoring key code %s" % keystr(key))
 
-def AccountScreenSetup(win, accounts, opts):
+def AccountScreenSetup(win, accounts):
     long_cmds = ["+ add email account", "- delete selected email account",
         "E edit selected email account"]
     # Commands:
     #  ?  Help       ↑ p Prev   PGUP < PrevPage  HOME ^ Top     + Add     E Edit
     #  CR Select     ↓ n Next   PGDN > NextPage  END  $ Bottom  - Remove
 
-    optScreen = screens.OptionScreen(win, opts, "Select email account",
+    optScreen = screens.OptionScreen(win, accounts, "Select email account",
         (("?  Help", "↑ p Prev", "PGUP < PrevPage", "HOME ^ Top", "+ Add", "E Edit"),
          ("CR Select", "↓ n Next", "PGDN > NextPage", "END  $ Bottom", "- Remove")),
         "E+-")
@@ -437,7 +456,7 @@ def AccountScreenSetup(win, accounts, opts):
     current = optScreen.getCurrent()
     if current is None: current = 0
     optScreen.setTopPrompt("Select account. %d/%d, F1 or ? for help: " % \
-        (current+1, len(opts)))
+        (current+1, len(accounts)))
     return optScreen
 
 
@@ -1281,7 +1300,7 @@ def getAccounts(config):
         if section.startswith("account "):
             name = section[8:].strip('"')
             config.set(section, "name", name)
-            accounts.append(imap.imapAccount(name, section, config))
+            accounts.append(imap.imapAccount.fromConfig(name, section, config))
     return accounts
 
 set_re = re.compile(r""" *set +(\w+)=(.+)""")   # For parsing .mailrc

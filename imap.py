@@ -69,16 +69,26 @@ class imapAuthFailed(imapException):
     pass
 
 class imapAccount(emailaccount.emailAccount):
-    def __init__(self, name, section, config):
+    @classmethod
+    def fromConfig(cls, name, section, config):
+        host = configGet(config, section, "imap")
+        port = configGet(config, section, "imapport")
+        conn = configGet(config, section, "imapconn")
+        user = configGet(config, section, "imapuser")
+        passwd = configGet(config, section, "imappass")
+        authtype = "plain"
+        return imapAccount(name, host, port, conn, user, passwd, "plain")
+
+    def __init__(self, name, host, port, ssltls, user, passwd, authtype):
         emailaccount.emailAccount.__init__(self, name)
         self.acctType = "imap"
         #writeLog("section %s, options: %s" % (section, config.options(section)))
-        self.host = configGet(config, section, "imap")
-        self.port = configGet(config, section, "imapport")
-        self.conn = configGet(config, section, "imapconn")
-        self.user = configGet(config, section, "imapuser")
-        self.passwd = configGet(config, section, "imappass")
-        self.authtype = "plain"
+        self.host = host
+        self.port = port
+        self.conn = ssltls
+        self.user = user
+        self.passwd = passwd
+        self.authtype = authtype
         self.subbedOnly = True
         writeLog("host=%s, port=%s, conn=%s, user=%s, passwd=%s" %
             (self.host, self.port, self.conn, self.user, self.passwd))
